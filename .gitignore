@@ -1,7 +1,67 @@
 # .gitignore 
 
-*.venv*
-*__pycache__*
-*.pyc
+## macos
+.DS_Store
 
-*.DS_Store*
+## virtual environments
+**/.venv/
+
+## python - byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+## python - distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+pip-wheel-metadata/
+MANIFEST
+
+## python - installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+## python - testing / coverage
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.cache
+coverage.xml
+*.cover
+.hypothesis/
+
+## python - type checkers / linters
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+## jupyter / ipython
+.ipynb_checkpoints/
+profile_default/
+ipython_config.py
+
+## environment / secrets
+.env
+.env.*
+!.env.example
+
+## IDE / editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+## logs
+*.log
+
+## snowflake 
+.snowflake/
