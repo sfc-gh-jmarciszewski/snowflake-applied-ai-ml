@@ -1,0 +1,8 @@
+spec:
+  containers:
+    - name: convert-api
+      image: __IMAGE_URL_BASE__/convert-api:__IMAGE_TAG__
+  endpoints:
+    - name: convert-api
+      port: 9090
+      public: true

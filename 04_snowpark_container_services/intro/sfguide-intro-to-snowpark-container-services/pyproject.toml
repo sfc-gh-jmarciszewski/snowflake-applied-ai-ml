@@ -1,0 +1,12 @@
+[project]
+name = "snowpark-container-services-intro"
+version = "0.1.0"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "snowflake-snowpark-python[pandas]",
+    "ipykernel",
+    "snowflake",
+    "snowflake-cli==3.10.0",
+    "python-dotenv",
+    "docker",
+]
