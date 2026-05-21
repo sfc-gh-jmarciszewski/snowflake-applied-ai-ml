@@ -1,0 +1,18 @@
+[project]
+name = "e2e-ml-workflow"
+version = "0.1.0"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "ipykernel",
+    "snowflake",
+    "snowflake-snowpark-python[pandas]",
+    "snowflake-ml-python",
+    "snowflake-cli",
+    "python-dotenv",
+    "docker",
+    "pandas",
+    "numpy",
+    "scikit-learn",
+    "xgboost",
+    "shap"
+]
