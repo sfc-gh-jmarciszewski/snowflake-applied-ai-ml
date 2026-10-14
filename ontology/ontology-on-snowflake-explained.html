@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="snowflake-source" content="cortex-agent-authored">
+<title>Ontology on Snowflake</title>
+<script type="application/json" id="snowflake-report-metadata">
+{
+  "generated": "2026-10-13",
+  "intent": "Interactive explainer (Bartosz Ciechanowski style) of how Ontology on Snowflake works, plus a step-by-step trace of one question from user input to agent response.",
+  "dataSources": [
+    { "type": "repo", "url": "https://github.com/Snowflake-Labs/ontology-on-snowflake",
+      "files": ["README.md", "sql/01_physical_layer.sql", "sql/02_entity_views.sql", "sql/04_ontology_metadata.sql", "sql/05_ontology_views_generator.sql", "sql/07_abstract_views.sql", "sql/08_seed_metadata.sql", "sql/09_load_data.sql", "agent/cortex_agent_config.json", "data/*.json"] }
+  ],
+  "sections": [
+    { "id": "nodes-edges", "title": "Nodes and edges", "producerNotes": "Subgraph of 4 clubs, 12 people, 1 match taken verbatim from data/*.json; IDs and dates match the repo sample data." },
+    { "id": "time", "title": "Time", "producerNotes": "EFFECTIVE_START/END from player_contracts.json and coach_contracts.json." },
+    { "id": "classes", "title": "Classes", "producerNotes": "ONT_CLASS seed rows from sql/08_seed_metadata.sql; full-dataset counts from README verification queries." },
+    { "id": "generated-views", "title": "Generated views", "producerNotes": "ONT_CLASS_MAP / ONT_REL_MAP rows and SP_GENERATE_ONTOLOGY_VIEWS logic from sql/05 and sql/08." },
+    { "id": "layers", "title": "Five layers", "producerNotes": "From README five-layer architecture." },
+    { "id": "routing", "title": "Agent routing", "producerNotes": "README intent-driven routing table and agent/cortex_agent_config.json." },
+    { "id": "journey", "title": "A question's journey", "producerNotes": "Illustrative trace. The generated SQL is a plausible rendering modeled on the README's abstract query, not captured output." },
+    { "id": "results", "title": "Results through time", "producerNotes": "All 9 Real Madrid contracts from sample data." },
+    { "id": "paths", "title": "Paths", "producerNotes": "Unweighted BFS in-browser; the repo's SPCS service uses NetworkX." }
+  ]
+}
+</script>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: light-dark(#fdfcf9, #16171a);
+  --fg: light-dark(#2b2b2b, #dedcd6);
+  --muted: light-dark(#7a7770, #9a978f);
+  --faint: light-dark(#e9e6df, #2a2b30);
+  --panel: light-dark(#f3f1eb, #1e1f23);
+  --line: light-dark(#cfcbc1, #44464d);
+  --ink: light-dark(#1d1d1d, #f2f0ea);
+  --player: light-dark(#2f7fc1, #5aa4e6);
+  --coach: light-dark(#e07a2f, #f39a55);
+  --club: light-dark(#3a9a5c, #5cc07f);
+  --match: light-dark(#8e63c0, #b48ce4);
+  --person: light-dark(#5b4fd1, #8f86ff);
+  --org: light-dark(#2f7d6b, #4fbfa3);
+  --works: light-dark(#c23f78, #ef6aa4);
+  --hl: light-dark(#f2c84b, #d9ae2a);
+  --code-bg: light-dark(#f0eee8, #202126);
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body {
+  margin: 0; color: var(--fg); background: var(--bg);
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  font-size: clamp(16px, 1.1vw + 11px, 19px); line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+}
+article { width: 100%; max-width: 760px; margin: 0 auto; padding: clamp(16px, 4vw, 28px); }
+h1 { font-size: clamp(30px, 5vw, 46px); line-height: 1.12; margin: 1.2em 0 0.25em; color: var(--ink); letter-spacing: -0.01em; }
+.subtitle { color: var(--muted); margin: 0 0 2.4em; }
+h2 { font-size: clamp(22px, 3vw, 28px); margin: 2.4em 0 0.6em; color: var(--ink); }
+p { margin: 0 0 1.1em; }
+a { color: light-dark(#2f6db0, #79b0f0); }
+code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.84em; background: var(--code-bg); padding: 0.08em 0.3em; border-radius: 4px; }
+pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; line-height: 1.5; background: var(--code-bg); padding: 12px 14px; border-radius: 8px; overflow-x: auto; margin: 0 0 1em; }
+.c-player { color: var(--player); font-weight: 600; }
+.c-coach { color: var(--coach); font-weight: 600; }
+.c-club { color: var(--club); font-weight: 600; }
+.c-match { color: var(--match); font-weight: 600; }
+.c-person { color: var(--person); font-weight: 600; }
+.c-org { color: var(--org); font-weight: 600; }
+.c-works { color: var(--works); font-weight: 600; }
+
+figure { margin: 2em calc(-1 * min(80px, 6vw)); padding: 0; }
+@media (max-width: 900px) { figure { margin: 2em 0; } }
+.fig { background: var(--panel); border-radius: 14px; padding: clamp(10px, 2vw, 18px); }
+figcaption { color: var(--muted); font-size: 0.82em; text-align: center; margin-top: 0.6em; padding: 0 1em; }
+svg { width: 100%; max-width: 100%; height: auto; display: block; }
+svg text { font-family: inherit; fill: var(--fg); }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: center; margin-top: 12px; font-size: 14px; }
+.controls label { color: var(--muted); }
+.readout { font-variant-numeric: tabular-nums; font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--ink); min-width: 9ch; }
+
+input[type=range] { -webkit-appearance: none; appearance: none; width: min(420px, 70vw); height: 22px; background: transparent; }
+input[type=range]::-webkit-slider-runnable-track { height: 4px; background: var(--line); border-radius: 2px; }
+input[type=range]::-moz-range-track { height: 4px; background: var(--line); border-radius: 2px; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--bg); border: 2px solid var(--ink); margin-top: -7px; cursor: grab; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--bg); border: 2px solid var(--ink); cursor: grab; }
+
+button, select {
+  font: inherit; font-size: 14px; color: var(--ink); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 999px; padding: 4px 14px; cursor: pointer;
+}
+button:hover, select:hover { border-color: var(--ink); }
+button.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.btnrow { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: 10px; }
+.btnrow button { border-radius: 8px; font-size: 13px; text-align: left; }
+
+.two { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.two.cls { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.25fr); }
+@media (max-width: 720px) { .two, .two.cls { grid-template-columns: minmax(0, 1fr); } }
+
+.tbl-wrap { overflow: auto; max-height: 360px; border-radius: 8px; background: var(--bg); }
+table.kg { border-collapse: collapse; width: 100%; font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; }
+table.kg th { position: sticky; top: 0; background: var(--faint); text-align: left; padding: 4px 6px; font-weight: 600; color: var(--ink); }
+table.kg td { padding: 3px 6px; border-top: 1px solid var(--faint); white-space: nowrap; }
+table.kg tr.hot td { background: color-mix(in srgb, var(--hl) 35%, transparent); }
+table.kg tr.dim td { opacity: 0.35; }
+table.kg tr.cut td { text-decoration: line-through; opacity: 0.45; }
+.tname { font-family: ui-monospace, Menlo, monospace; font-size: 12px; font-weight: 700; margin: 4px 2px 4px; color: var(--ink); }
+
+.note { font-size: 0.86em; color: var(--muted); border-left: 3px solid var(--line); padding-left: 12px; margin: 1.2em 0; }
+.panel { background: var(--bg); border-radius: 10px; padding: 12px 14px; margin-top: 12px; font-size: 14px; line-height: 1.5; min-height: 4em; }
+.panel h4 { margin: 0 0 6px; font-size: 14px; color: var(--ink); }
+.panel pre { font-size: 12px; margin: 6px 0; }
+.stepdots { display: flex; gap: 5px; justify-content: center; margin-top: 8px; flex-wrap: wrap; }
+.stepdots span { width: 9px; height: 9px; border-radius: 50%; background: var(--line); cursor: pointer; }
+.stepdots span.on { background: var(--ink); }
+.answer { border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; background: var(--bg); }
+.chip { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); margin: 2px 3px 2px 0; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+@media (max-width: 560px) { .cols { grid-template-columns: 1fr; } }
+.cols .panel { margin-top: 0; }
+.listnames { margin: 4px 0 0; padding-left: 1.1em; }
+.listnames li { margin: 1px 0; }
+footer { color: var(--muted); font-size: 0.85em; margin: 4em 0 3em; border-top: 1px solid var(--faint); padding-top: 1.2em; }
+.hoverable { cursor: pointer; }
+</style>
+</head>
+<body>
+<article>
+
+<h1>Ontology on Snowflake</h1>
+<p class="subtitle">How a pair of tables, some metadata, and an agent let you ask a database about <em>people</em> and <em>organizations</em> instead of rows and columns.</p>
+
+<p>Databases are very good at remembering facts and very bad at knowing what those facts <em>mean</em>. A table called <code>PLAYER_CONTRACTS</code> knows that person 1 has a row pointing at club 1 with a start and end date. It does not know that a player is a kind of person, that a contract is a kind of employment, or that a coach on the same club's payroll is, in the sense that matters to most questions, a colleague of that player.</p>
+
+<p><a href="https://github.com/Snowflake-Labs/ontology-on-snowflake">Ontology on Snowflake</a> is an open-source reference implementation from Snowflake Labs that bolts that meaning onto the data, natively, using nothing but tables, views, a stored procedure, three semantic models and a Cortex Agent. In this article we'll build it up one layer at a time and then follow a single question through the whole machine, from the moment it's typed to the moment an answer comes back.</p>
+
+<p>Throughout, we'll use the repository's own sample data: a small, synthetic world of soccer <span class="c-player">players</span>, <span class="c-coach">coaches</span>, <span class="c-club">clubs</span> and <span class="c-match">matches</span>. The names are real; the careers are partly invented, so don't be alarmed when you see an unexpected transfer.</p>
+
+<h2 id="nodes-edges">Nodes and edges</h2>
+
+<p>Everything starts with two tables. <code>KG_NODE</code> holds every <em>thing</em>: one row per entity, with an ID, a type, a name and a <code>VARIANT</code> column called <code>PROPS</code> where type-specific attributes live as JSON. <code>KG_EDGE</code> holds every <em>connection</em>: a source ID, a destination ID, an edge type, a weight, its own <code>PROPS</code>, and a pair of dates that say when the connection was true.</p>
+
+<p>That's the entire physical model. There is no <code>PLAYERS</code> table and no <code>CLUBS</code> table. A new kind of entity is a new value in <code>NODE_TYPE</code>, not a migration. Hover over a row, or over a circle, to see how the same data reads as a table and as a graph:</p>
+
+<figure>
+  <div class="fig">
+    <div class="two">
+      <svg id="g1" viewBox="0 0 680 430" aria-label="Knowledge graph"></svg>
+      <div>
+        <div class="tname">KG_NODE</div>
+        <div class="tbl-wrap" style="max-height:190px"><table class="kg" id="t-node"></table></div>
+        <div class="tname" style="margin-top:10px">KG_EDGE</div>
+        <div class="tbl-wrap" style="max-height:190px"><table class="kg" id="t-edge"></table></div>
+      </div>
+    </div>
+  </div>
+  <figcaption>Seventeen nodes and twenty-two edges taken directly from the repository's <code>data/</code> folder.</figcaption>
+</figure>
+
+<p>Notice the <code>NODE_ID</code> values. The loader in <code>09_load_data.sql</code> simply casts the source keys to strings, so club <code>1</code> (Real Madrid) and person <code>1</code> (Mbappé) share an ID. It works because nothing ever looks at <code>KG_NODE</code> raw: every query goes through a view filtered by <code>NODE_TYPE</code>, which is our first hint that the views matter more than the tables.</p>
+
+<h2 id="time">Time</h2>
+
+<p>Edges aren't just connections; they're connections <em>during an interval</em>. Every contract is an edge with <code>EFFECTIVE_START</code> and <code>EFFECTIVE_END</code>, and a <code>NULL</code> end means "still true". This turns the graph into something closer to a film than a photograph. Drag the slider to scrub through it:</p>
+
+<figure>
+  <div class="fig">
+    <svg id="g2" viewBox="0 0 680 430" aria-label="Graph over time"></svg>
+    <div class="controls">
+      <button id="g2-play">Play</button>
+      <input type="range" id="g2-t" min="2007" max="2029.5" step="0.01" value="2019.5" aria-label="Date">
+      <span class="readout" id="g2-date"></span>
+    </div>
+    <pre id="g2-sql" style="margin:12px auto 0; max-width:620px"></pre>
+  </div>
+  <figcaption>Edges fade out once they're no longer valid at the selected date. Ancelotti's two separate spells at Real Madrid are two separate edges.</figcaption>
+</figure>
+
+<p>Any question with "currently", "in 2015" or "on 1 January 2025" in it becomes a simple range predicate on these two columns. We'll lean on that heavily later.</p>
+
+<h2 id="classes">Classes</h2>
+
+<p>So far we have a graph, but not an ontology. The graph knows that node 101 has type <code>COACH</code>; it doesn't know what a coach <em>is</em>. Layer 2 adds that knowledge as rows in a set of metadata tables. The most important is <code>ONT_CLASS</code>, which arranges types into a hierarchy. Four classes are <em>abstract</em> &mdash; they never appear in <code>NODE_TYPE</code> &mdash; and four are concrete:</p>
+
+<figure>
+  <div class="fig">
+    <div class="two cls">
+      <svg id="tree" viewBox="0 0 360 300" style="max-width:420px;margin:0 auto" aria-label="Class hierarchy"></svg>
+      <svg id="g3" viewBox="0 0 680 430" aria-label="Class membership in graph"></svg>
+    </div>
+    <div class="panel" id="cls-panel"></div>
+  </div>
+  <figcaption>Click a class. Abstract classes (dashed) light up every node of every subclass beneath them.</figcaption>
+</figure>
+
+<p>This is the whole trick behind <em>polymorphic</em> queries. A question about <span class="c-person">Person</span> doesn't care whether the answer is a <span class="c-player">Player</span> or a <span class="c-coach">Coach</span>; it just wants everything underneath. The same idea applies to relationships. <code>ONT_RELATION_DEF</code> declares concrete links like <code>PLAYS_FOR</code> (Player &rarr; Club) and <code>COACHES</code> (Coach &rarr; Club), and an abstract one, <code>works_for</code>, from <span class="c-person">Person</span> to <span class="c-org">Organization</span>. Slide between the two views of the same edges:</p>
+
+<figure>
+  <div class="fig">
+    <svg id="g4" viewBox="0 0 680 430" aria-label="Concrete to abstract relationships"></svg>
+    <div class="controls">
+      <label for="g4-a">concrete</label>
+      <input type="range" id="g4-a" min="0" max="1" step="0.01" value="0" aria-label="Abstraction">
+      <label for="g4-a">abstract</label>
+    </div>
+  </div>
+  <figcaption><span class="c-player">PLAYS_FOR</span> and <span class="c-coach">COACHES</span> collapse into a single <span class="c-works">works_for</span> relation. Nothing about the underlying rows changes.</figcaption>
+</figure>
+
+<p>The metadata layer goes further than this: <code>ONT_PROPERTY</code> types each attribute, <code>ONT_RULE</code> holds inference rules (for example, <code>employs</code> is the inverse of <code>works_for</code>), there are interfaces like <em>Named</em> and <em>Temporal</em>, action types such as <em>Transfer Player</em>, and <code>ONT_PERMISSION</code> maps ontology roles like <em>viewer</em> and <em>analyst</em> to object and link types. All of it is ordinary rows in ordinary tables, which means the ontology can be queried like any other data.</p>
+
+<h2 id="generated-views">Generated views</h2>
+
+<p>Metadata on its own doesn't answer anything. Layer 3 turns it into something SQL can use. A Python stored procedure, <code>SP_GENERATE_ONTOLOGY_VIEWS()</code>, reads two mapping tables &mdash; <code>ONT_CLASS_MAP</code> for classes and <code>ONT_REL_MAP</code> for relationships &mdash; and, for each abstract class or relation, writes a <code>UNION ALL</code> view over its concrete implementations. Step through what it does:</p>
+
+<figure>
+  <div class="fig">
+    <svg id="gen" viewBox="0 0 760 360" aria-label="View generator"></svg>
+    <div class="controls">
+      <button id="gen-prev">&larr;</button>
+      <input type="range" id="gen-s" min="0" max="4" step="1" value="0" aria-label="Step">
+      <button id="gen-next">&rarr;</button>
+    </div>
+    <div class="panel" id="gen-panel"></div>
+  </div>
+  <figcaption>The procedure is metadata in, DDL out. Adding a new subclass of Person later is one row in <code>ONT_CLASS</code> and one in <code>ONT_CLASS_MAP</code>, then re-run.</figcaption>
+</figure>
+
+<p>The result is a stack of views. At the bottom are type views like <code>V_PLAYER</code> that just filter <code>KG_NODE</code> and pull fields out of <code>PROPS</code>. Above them sit relationship views like <code>V_PLAYS_FOR</code>, a unified <code>REL_RESOLVED</code> view over every edge, and finally the abstract views: <code>VW_ONT_PERSON</code>, <code>VW_ONT_ORGANIZATION</code>, <code>VW_ONT_EVENT</code>, <code>VW_ONT_WORKS_FOR</code>, <code>VW_ONT_PARTICIPATES_IN</code>. Because they're views, they cost nothing until queried and never go stale.</p>
+
+<h2 id="layers">Five layers</h2>
+
+<p>We now have the three data layers. Two more sit on top, and they're where natural language enters the picture. Layer 4 is a set of <strong>Cortex Analyst semantic models</strong> &mdash; YAML files that describe tables, columns, joins and synonyms so an LLM can write SQL against them. Layer 5 is a <strong>Cortex Agent</strong> that decides which model, or which graph algorithm, a question needs. Pull the stack apart to see each layer:</p>
+
+<figure>
+  <div class="fig">
+    <svg id="stack" viewBox="0 0 760 470" aria-label="Five layer architecture"></svg>
+    <div class="controls">
+      <label for="stack-x">stacked</label>
+      <input type="range" id="stack-x" min="0" max="1" step="0.01" value="0.65" aria-label="Spread">
+      <label for="stack-x">exploded</label>
+    </div>
+    <div class="panel" id="stack-panel"></div>
+  </div>
+  <figcaption>Hover or tap a layer for details.</figcaption>
+</figure>
+
+<p>The three semantic models split the work by the <em>kind</em> of question. The <strong>Knowledge Graph model</strong> covers concrete views (<code>V_PLAYER</code>, <code>V_PLAYS_FOR</code>, &hellip;) and is fast and precise for "who plays for X". The <strong>Ontology model</strong> covers the abstract views and is what you need for "who works for X". The <strong>Metadata &amp; Governance model</strong> points at the <code>ONT_*</code> tables themselves so the agent can answer questions <em>about</em> the ontology, like "what object types exist?" or "what can the analyst role do?".</p>
+
+<h2 id="routing">Routing</h2>
+
+<p>The agent's configuration lists eight tools: three Cortex Analyst tools, one per semantic model, and five graph-analytics tools served by a NetworkX container running in Snowpark Container Services. Its orchestration instructions spell out, in plain English, which kind of question goes where. Pick a question:</p>
+
+<figure>
+  <div class="fig">
+    <svg id="route" viewBox="0 0 760 340" aria-label="Agent routing"></svg>
+    <div class="btnrow" id="route-q"></div>
+    <div class="panel" id="route-panel"></div>
+  </div>
+  <figcaption>Examples and routing taken from the repository README and <code>agent/cortex_agent_config.json</code>.</figcaption>
+</figure>
+
+<p>The distinction between the first two questions is subtle in English and enormous in SQL. "Plays for" names a concrete relationship; "works for" names an abstract one. The difference decides whether coaches show up in the answer at all.</p>
+
+<h2 id="journey">A question's journey</h2>
+
+<p>Let's follow one question all the way through: <em>"Who was working for Real Madrid on 1 January 2025?"</em> Step through, or press play, and watch where it goes and what it turns into at each stop.</p>
+
+<figure>
+  <div class="fig">
+    <svg id="jr" viewBox="0 0 900 470" aria-label="Query journey"></svg>
+    <div class="controls">
+      <button id="jr-play">Play</button>
+      <button id="jr-prev">&larr;</button>
+      <input type="range" id="jr-s" min="0" max="9" step="1" value="0" aria-label="Step">
+      <button id="jr-next">&rarr;</button>
+    </div>
+    <div class="stepdots" id="jr-dots"></div>
+    <div class="panel" id="jr-panel"></div>
+  </div>
+  <figcaption>The SQL shown is a representative rendering modeled on the repository's sample abstract query; Cortex Analyst's exact output will vary.</figcaption>
+</figure>
+
+<p>Two moments in that journey are worth dwelling on. The first is step 4, where a vague English verb, "working for", is resolved to a specific view. That only works because Layer 2 gave the concept a name and Layer 3 gave the name a table. The second is step 7, where Snowflake expands a handful of view names into a tree that bottoms out in exactly two physical tables. The ontology is, in the end, a very elaborate way of writing a <code>WHERE</code> clause on <code>KG_EDGE</code>.</p>
+
+<h2 id="results">Results through time</h2>
+
+<p>Since the answer depends on the date, it's worth seeing the whole picture. Here are all nine Real Madrid edges in the sample data, laid out as a timeline. Drag the date and compare what each semantic model would return:</p>
+
+<figure>
+  <div class="fig">
+    <svg id="gantt" viewBox="0 0 760 296" aria-label="Real Madrid contracts timeline"></svg>
+    <div class="controls">
+      <input type="range" id="gantt-t" min="2009" max="2029.5" step="0.01" value="2025.0" aria-label="As-of date">
+      <span class="readout" id="gantt-date"></span>
+    </div>
+    <div class="cols">
+      <div class="panel"><h4>query_soccer_data &middot; <code>V_PLAYS_FOR</code></h4><ul class="listnames" id="gantt-a"></ul></div>
+      <div class="panel"><h4>query_soccer_ontology &middot; <code>VW_ONT_WORKS_FOR</code></h4><ul class="listnames" id="gantt-b"></ul></div>
+    </div>
+  </div>
+  <figcaption>The two lists differ only by <span class="c-coach">coaches</span>. Outside Ancelotti's two spells the sample data has no Real Madrid coach, so the lists agree.</figcaption>
+</figure>
+
+<h2 id="paths">Paths</h2>
+
+<p>Not every question is a filter. "How is Mbappé connected to Haaland?" has no natural SQL shape, which is why the agent hands such questions to the graph tools. Those run in a Snowpark Container Services service that loads the graph into NetworkX and runs real graph algorithms: shortest paths, centrality, Louvain communities, transfer and temporal analysis. Here's the idea behind the first one, a breadth-first search expanding outward one hop at a time:</p>
+
+<figure>
+  <div class="fig">
+    <svg id="g5" viewBox="0 0 680 430" aria-label="Shortest path search"></svg>
+    <div class="controls">
+      <select id="bfs-a" aria-label="From"></select>
+      <span>&rarr;</span>
+      <select id="bfs-b" aria-label="To"></select>
+      <button id="bfs-play">Search</button>
+      <input type="range" id="bfs-s" min="0" max="6" step="1" value="0" aria-label="Hop">
+    </div>
+    <div class="panel" id="bfs-panel"></div>
+  </div>
+  <figcaption>Unweighted search across all edges regardless of date. The repository's <code>graph_shortest_path</code> tool uses NetworkX on weighted edges, which reduces to the same thing when every weight is 1.0, the <code>KG_EDGE</code> default.</figcaption>
+</figure>
+
+<h2>Putting it together</h2>
+
+<p>Step back and the design is surprisingly modest. Two tables hold the facts. A handful of metadata tables hold the meaning. A stored procedure compiles meaning into views. Semantic models translate views into vocabulary an LLM can use, and an agent picks the right vocabulary for each question. Every layer is a standard Snowflake object, so governance, access control and cost all work the way they already do.</p>
+
+<p>The payoff is that the hard part &mdash; deciding that a coach is a person, that coaching is a kind of working, that "working for" should include both &mdash; is written down once, as data, rather than re-derived in every query, dashboard and prompt. The question we followed had no idea that Ancelotti lived in a different table from Mbappé. It didn't need to.</p>
+
+<footer>
+  Source: <a href="https://github.com/Snowflake-Labs/ontology-on-snowflake">Snowflake-Labs/ontology-on-snowflake</a> (Apache-2.0). Table and view names, metadata rows, contract dates and agent routing are taken from that repository; the sample data is synthetic. Presentation inspired by <a href="https://ciechanow.ski/mechanical-watch/">Bartosz Ciechanowski</a>.
+</footer>
+
+</article>
+<script>
+(function () {
+'use strict';
+const NS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  if (attrs) for (const k in attrs) {
+    if (k === 'style') Object.assign(e.style, attrs.style);
+    else if (k === 'text') e.textContent = attrs.text;
+    else e.setAttribute(k, attrs[k]);
+  }
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function h(tag, attrs, parent) {
+  const e = document.createElement(tag);
+  if (attrs) for (const k in attrs) {
+    if (k === 'text') e.textContent = attrs.text;
+    else if (k === 'html') e.innerHTML = attrs.html;
+    else e.setAttribute(k, attrs[k]);
+  }
+  if (parent) parent.appendChild(e);
+  return e;
+}
+const $ = (id) => document.getElementById(id);
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// ---------- dates ----------
+function dy(s) { // 'YYYY-MM-DD' -> decimal year
+  if (!s) return Infinity;
+  const [y, m, d] = s.split('-').map(Number);
+  const t0 = Date.UTC(y, 0, 1), t1 = Date.UTC(y + 1, 0, 1);
+  return y + (Date.UTC(y, m - 1, d) - t0) / (t1 - t0);
+}
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function fromDy(t) {
+  const y = Math.floor(t);
+  const t0 = Date.UTC(y, 0, 1), t1 = Date.UTC(y + 1, 0, 1);
+  const d = new Date(t0 + (t - y) * (t1 - t0));
+  return d;
+}
+function iso(t) { const d = fromDy(t); return d.toISOString().slice(0, 10); }
+function pretty(t) { const d = fromDy(t); return d.getUTCDate() + ' ' + MONTHS[d.getUTCMonth()] + ' ' + d.getUTCFullYear(); }
+
+// ---------- data (verbatim from Snowflake-Labs/ontology-on-snowflake data/*.json) ----------
+const N = [
+  { k: 'C1', id: '1', type: 'CLUB', name: 'Real Madrid', short: 'Real Madrid', x: 330, y: 220, props: { league: 'La Liga', country: 'Spain', stadium: 'Santiago Bernabéu', founded_year: 1902 } },
+  { k: 'C2', id: '2', type: 'CLUB', name: 'Manchester City', short: 'Man City', x: 550, y: 140, props: { league: 'Premier League', country: 'England', stadium: 'Etihad Stadium', founded_year: 1880 } },
+  { k: 'C4', id: '4', type: 'CLUB', name: 'Paris Saint-Germain', short: 'PSG', x: 115, y: 140, props: { league: 'Ligue 1', country: 'France', stadium: 'Parc des Princes', founded_year: 1970 } },
+  { k: 'C15', id: '15', type: 'CLUB', name: 'Borussia Dortmund', short: 'Dortmund', x: 470, y: 335, props: { league: 'Bundesliga', country: 'Germany', stadium: 'Signal Iduna Park', founded_year: 1909 } },
+  { k: 'M3', id: '3', type: 'MATCH', name: 'Paris Saint-Germain vs Manchester City', short: 'PSG v Man City', x: 330, y: 48, props: { event_date: '2025-11-06', venue: 'Parc des Princes', competition: 'Champions League', score_home: 1, score_away: 2 } },
+  { k: 'P1', id: '1', type: 'PLAYER', name: 'Kylian Mbappé', short: 'Mbappé', x: 220, y: 155, props: { position: 'Forward', nationality: 'France', birthdate: '1998-12-20' } },
+  { k: 'P2', id: '2', type: 'PLAYER', name: 'Erling Haaland', short: 'Haaland', x: 578, y: 250, props: { position: 'Forward', nationality: 'Norway', birthdate: '2000-07-21' } },
+  { k: 'P3', id: '3', type: 'PLAYER', name: 'Jude Bellingham', short: 'Bellingham', x: 440, y: 252, props: { position: 'Midfielder', nationality: 'England', birthdate: '2003-06-29' } },
+  { k: 'P6', id: '6', type: 'PLAYER', name: 'Cristiano Ronaldo', short: 'Ronaldo', x: 192, y: 292, props: { position: 'Forward', nationality: 'Portugal', birthdate: '1985-02-05' } },
+  { k: 'P10', id: '10', type: 'PLAYER', name: 'Luka Modrić', short: 'Modrić', x: 322, y: 385, props: { position: 'Midfielder', nationality: 'Croatia', birthdate: '1985-09-09' } },
+  { k: 'P11', id: '11', type: 'PLAYER', name: 'Toni Kroos', short: 'Kroos', x: 390, y: 312, props: { position: 'Midfielder', nationality: 'Germany', birthdate: '1990-01-04' } },
+  { k: 'P12', id: '12', type: 'PLAYER', name: 'Casemiro', short: 'Casemiro', x: 445, y: 172, props: { position: 'Midfielder', nationality: 'Brazil', birthdate: '1992-02-23' } },
+  { k: 'P36', id: '36', type: 'PLAYER', name: 'Martin Ødegaard', short: 'Ødegaard', x: 232, y: 372, props: { position: 'Midfielder', nationality: 'Norway', birthdate: '1998-12-17' } },
+  { k: 'P101', id: '101', type: 'COACH', name: 'Carlo Ancelotti', short: 'Ancelotti', x: 448, y: 88, props: { nationality: 'Italy', license_level: 'UEFA Pro' } },
+  { k: 'P102', id: '102', type: 'COACH', name: 'Pep Guardiola', short: 'Guardiola', x: 640, y: 62, props: { nationality: 'Spain', license_level: 'UEFA Pro' } },
+  { k: 'P105', id: '105', type: 'COACH', name: 'Mauricio Pochettino', short: 'Pochettino', x: 48, y: 236, props: { nationality: 'Argentina', license_level: 'UEFA Pro' } },
+  { k: 'P111', id: '111', type: 'COACH', name: 'Edin Terzić', short: 'Terzić', x: 592, y: 385, props: { nationality: 'Germany', license_level: 'UEFA Pro' } }
+];
+const NM = {}; N.forEach((n) => (NM[n.k] = n));
+function pe(id, p, c, s, e, j, v) { return { id: String(id), src: 'P' + p, dst: 'C' + c, type: 'PLAYS_FOR', start: s, end: e, props: { jersey_number: j, contract_value: v } }; }
+function ce(id, p, c, s, e, v) { return { id: String(id), src: 'P' + p, dst: 'C' + c, type: 'COACHES', start: s, end: e, props: { contract_value: v } }; }
+const E = [
+  pe(1, 1, 1, '2024-07-01', '2029-06-30', 9, 45000000),
+  pe(2, 2, 2, '2022-07-01', '2027-06-30', 9, 50000000),
+  pe(3, 3, 1, '2023-07-01', '2029-06-30', 5, 40000000),
+  pe(10, 10, 1, '2012-08-27', '2024-06-30', 10, 25000000),
+  pe(11, 11, 1, '2014-07-17', '2024-06-30', 8, 20000000),
+  pe(12, 12, 2, '2022-08-22', '2027-06-30', 18, 30000000),
+  pe(101, 1, 4, '2017-08-31', '2024-06-30', 7, 40000000),
+  pe(102, 2, 15, '2020-01-01', '2022-06-30', 9, 20000000),
+  pe(103, 3, 15, '2020-07-20', '2023-06-30', 22, 15000000),
+  pe(105, 6, 1, '2009-07-01', '2018-07-10', 7, 45000000),
+  pe(115, 11, 15, '2007-01-31', '2014-07-17', 39, 10000000),
+  pe(116, 12, 1, '2013-01-31', '2022-08-22', 14, 25000000),
+  pe(138, 36, 1, '2015-01-16', '2021-01-27', 8, 10000000),
+  ce(201, 101, 1, '2021-06-01', '2026-06-30', 15000000),
+  ce(202, 102, 2, '2016-07-01', '2026-06-30', 20000000),
+  ce(211, 111, 15, '2022-05-23', '2025-06-30', 5000000),
+  ce(301, 101, 2, '2016-07-01', '2021-06-01', 12000000),
+  ce(302, 101, 1, '2013-06-25', '2015-05-25', 10000000),
+  ce(307, 105, 4, '2021-01-02', '2022-07-05', 10000000),
+  ce(314, 111, 15, '2020-12-13', '2021-05-23', 3000000),
+  { id: 'HT_3', src: 'C4', dst: 'M3', type: 'HOME_TEAM', start: '2025-11-06', end: null, props: {} },
+  { id: 'AT_3', src: 'C2', dst: 'M3', type: 'AWAY_TEAM', start: '2025-11-06', end: null, props: {} }
+];
+E.forEach((e) => { e.t0 = dy(e.start); e.t1 = dy(e.end); });
+
+const TYPECOL = { PLAYER: 'var(--player)', COACH: 'var(--coach)', CLUB: 'var(--club)', MATCH: 'var(--match)' };
+const EDGECOL = { PLAYS_FOR: 'var(--player)', COACHES: 'var(--coach)', HOME_TEAM: 'var(--match)', AWAY_TEAM: 'var(--match)' };
+const RADIUS = { CLUB: 21, PLAYER: 12, COACH: 12, MATCH: 14 };
+
+// ---------- graph renderer ----------
+// pair offsets so repeated contracts (e.g. Ancelotti x2 at Real Madrid) draw as separate arcs
+(function () {
+  const groups = {};
+  E.forEach((e) => { const key = [e.src, e.dst].sort().join('|'); (groups[key] = groups[key] || []).push(e); });
+  Object.values(groups).forEach((g) => g.forEach((e, i) => (e.bend = (i - (g.length - 1) / 2) * 30)));
+})();
+function edgePath(e) {
+  const a = NM[e.src], b = NM[e.dst];
+  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+  const dx = b.x - a.x, dy_ = b.y - a.y, L = Math.hypot(dx, dy_) || 1;
+  const cx = mx - (dy_ / L) * e.bend, cy = my + (dx / L) * e.bend;
+  return `M${a.x},${a.y} Q${cx},${cy} ${b.x},${b.y}`;
+}
+let gid = 0;
+function makeGraph(svg) {
+  const id = 'sh' + (++gid);
+  const defs = el('defs', null, svg);
+  const rg = el('radialGradient', { id, cx: '35%', cy: '30%', r: '70%' }, defs);
+  el('stop', { offset: '0%', 'stop-color': '#fff', 'stop-opacity': '0.55' }, rg);
+  el('stop', { offset: '55%', 'stop-color': '#fff', 'stop-opacity': '0.08' }, rg);
+  el('stop', { offset: '100%', 'stop-color': '#000', 'stop-opacity': '0.12' }, rg);
+  const gE = el('g', null, svg), gN = el('g', null, svg);
+  const edges = E.map((e) => {
+    const p = el('path', { d: edgePath(e) }, gE);
+    Object.assign(p.style, { stroke: EDGECOL[e.type], strokeWidth: '2.4', fill: 'none', strokeLinecap: 'round', transition: 'opacity .18s, stroke-width .18s' });
+    return { e, p };
+  });
+  const nodes = N.map((n) => {
+    const g = el('g', { transform: `translate(${n.x},${n.y})`, class: 'hoverable' }, gN);
+    g.style.transition = 'opacity .18s';
+    const r = RADIUS[n.type];
+    const halo = el('circle', { r: r + 7 }, g);
+    Object.assign(halo.style, { fill: 'none', stroke: 'var(--hl)', strokeWidth: '4', opacity: '0', transition: 'opacity .18s' });
+    let shape, gloss;
+    if (n.type === 'MATCH') {
+      shape = el('rect', { x: -r, y: -r, width: 2 * r, height: 2 * r, rx: 5, transform: 'rotate(45)' }, g);
+      gloss = el('rect', { x: -r, y: -r, width: 2 * r, height: 2 * r, rx: 5, transform: 'rotate(45)', fill: `url(#${id})` }, g);
+    } else {
+      shape = el('circle', { r }, g);
+      gloss = el('circle', { r, fill: `url(#${id})` }, g);
+    }
+    Object.assign(shape.style, { fill: TYPECOL[n.type], stroke: 'var(--bg)', strokeWidth: '2', transition: 'fill .2s' });
+    gloss.style.pointerEvents = 'none';
+    const lbl = el('text', { y: r + 14, 'text-anchor': 'middle', text: n.short }, g);
+    Object.assign(lbl.style, { fontSize: n.type === 'CLUB' ? '13px' : '11.5px', fontWeight: n.type === 'CLUB' ? '700' : '500', paintOrder: 'stroke', stroke: 'var(--panel)', strokeWidth: '3px', strokeLinejoin: 'round' });
+    return { n, g, shape, halo, lbl };
+  });
+  const byK = {}; nodes.forEach((x) => (byK[x.n.k] = x));
+  return { svg, edges, nodes, byK, gE, gN };
+}
+
+// ======================= FIG 1: tables <-> graph =======================
+(function () {
+  const G = makeGraph($('g1'));
+  const tn = $('t-node'), te = $('t-edge');
+  h('tr', { html: '<th>NODE_ID</th><th>NODE_TYPE</th><th>NAME</th><th>PROPS</th>' }, h('thead', null, tn));
+  const tbn = h('tbody', null, tn);
+  const nodeRows = {};
+  N.forEach((n) => {
+    const tr = h('tr', { html: `<td>${esc(n.id)}</td><td style="color:${TYPECOL[n.type]};font-weight:600">${n.type}</td><td>${esc(n.name)}</td><td>${esc(JSON.stringify(n.props))}</td>` }, tbn);
+    tr.className = 'hoverable'; nodeRows[n.k] = tr;
+  });
+  h('tr', { html: '<th>EDGE_ID</th><th>SRC_ID</th><th>DST_ID</th><th>EDGE_TYPE</th><th>EFFECTIVE_START</th><th>EFFECTIVE_END</th><th>PROPS</th>' }, h('thead', null, te));
+  const tbe = h('tbody', null, te);
+  const edgeRows = {};
+  E.forEach((e) => {
+    const tr = h('tr', { html: `<td>${esc(e.id)}</td><td>${NM[e.src].id}</td><td>${NM[e.dst].id}</td><td style="color:${EDGECOL[e.type]};font-weight:600">${e.type}</td><td>${e.start}</td><td>${e.end || 'NULL'}</td><td>${esc(JSON.stringify(e.props))}</td>` }, tbe);
+    tr.className = 'hoverable'; edgeRows[e.id] = tr;
+  });
+  function scrollTo(row) { const w = row.closest('.tbl-wrap'); w.scrollTop = row.offsetTop - w.clientHeight / 2; }
+  function clear() {
+    G.nodes.forEach((x) => { x.g.style.opacity = 1; x.halo.style.opacity = 0; });
+    G.edges.forEach((x) => { x.p.style.opacity = 1; x.p.style.strokeWidth = 2.4; });
+    Object.values(nodeRows).forEach((r) => r.classList.remove('hot', 'dim'));
+    Object.values(edgeRows).forEach((r) => r.classList.remove('hot', 'dim'));
+  }
+  function focus(nodeKs, edgeIds, scroll) {
+    G.nodes.forEach((x) => { const on = nodeKs.has(x.n.k); x.g.style.opacity = on ? 1 : 0.25; x.halo.style.opacity = on ? 1 : 0; });
+    G.edges.forEach((x) => { const on = edgeIds.has(x.e.id); x.p.style.opacity = on ? 1 : 0.1; x.p.style.strokeWidth = on ? 4 : 2.4; });
+    for (const k in nodeRows) { nodeRows[k].classList.toggle('hot', nodeKs.has(k)); nodeRows[k].classList.toggle('dim', !nodeKs.has(k)); }
+    for (const k in edgeRows) { edgeRows[k].classList.toggle('hot', edgeIds.has(k)); edgeRows[k].classList.toggle('dim', !edgeIds.has(k)); }
+    if (scroll) { const fn = [...nodeKs][0]; if (fn) scrollTo(nodeRows[fn]); const fe = [...edgeIds][0]; if (fe) scrollTo(edgeRows[fe]); }
+  }
+  function focusNode(k, scroll) {
+    const es = new Set(E.filter((e) => e.src === k || e.dst === k).map((e) => e.id));
+    focus(new Set([k]), es, scroll);
+  }
+  function focusEdge(id, scroll) {
+    const e = E.find((x) => x.id === id);
+    focus(new Set([e.src, e.dst]), new Set([id]), scroll);
+  }
+  G.nodes.forEach((x) => { x.g.addEventListener('pointerenter', () => focusNode(x.n.k, true)); x.g.addEventListener('pointerleave', clear); });
+  G.edges.forEach((x) => { x.p.style.cursor = 'pointer'; x.p.addEventListener('pointerenter', () => focusEdge(x.e.id, true)); x.p.addEventListener('pointerleave', clear); });
+  for (const k in nodeRows) { nodeRows[k].addEventListener('pointerenter', () => focusNode(k, false)); nodeRows[k].addEventListener('pointerleave', clear); }
+  for (const k in edgeRows) { edgeRows[k].addEventListener('pointerenter', () => focusEdge(k, false)); edgeRows[k].addEventListener('pointerleave', clear); }
+})();
+
+// ======================= FIG 2: time =======================
+(function () {
+  const G = makeGraph($('g2'));
+  const s = $('g2-t'), out = $('g2-date'), sql = $('g2-sql'), btn = $('g2-play');
+  const stamp = el('text', { x: 18, y: 418, text: '' }, $('g2'));
+  Object.assign(stamp.style, { fontSize: '30px', fontWeight: '700', fill: 'var(--line)' });
+  function draw() {
+    const t = +s.value;
+    const live = new Set();
+    let n = 0;
+    G.edges.forEach((x) => {
+      const on = x.e.t0 <= t && t <= x.e.t1;
+      x.p.style.opacity = on ? 1 : 0.06;
+      if (on) { n++; live.add(x.e.src); live.add(x.e.dst); }
+    });
+    G.nodes.forEach((x) => (x.g.style.opacity = live.has(x.n.k) ? 1 : 0.28));
+    out.textContent = pretty(t);
+    stamp.textContent = fromDy(t).getUTCFullYear();
+    const d = iso(t);
+    sql.innerHTML = `SELECT * FROM KG_EDGE\nWHERE EFFECTIVE_START &lt;= '${d}'\n  AND (EFFECTIVE_END IS NULL OR EFFECTIVE_END &gt;= '${d}');\n<span style="color:var(--muted)">-- ${n} of ${E.length} edges in this subgraph</span>`;
+  }
+  s.addEventListener('input', draw);
+  let raf = 0, last = 0;
+  function tick(ts) {
+    if (!last) last = ts;
+    const dt = (ts - last) / 1000; last = ts;
+    let v = +s.value + dt * 1.6;
+    if (v > +s.max) v = +s.min;
+    s.value = v; draw();
+    raf = requestAnimationFrame(tick);
+  }
+  btn.addEventListener('click', () => {
+    if (raf) { cancelAnimationFrame(raf); raf = 0; btn.textContent = 'Play'; btn.classList.remove('on'); }
+    else { last = 0; raf = requestAnimationFrame(tick); btn.textContent = 'Pause'; btn.classList.add('on'); }
+  });
+  draw();
+})();
+
+// ======================= FIG 3: class hierarchy =======================
+(function () {
+  const svg = $('tree');
+  const C = [
+    { name: 'Thing', parent: null, abs: true, x: 180, y: 32, col: 'var(--ink)', types: ['PLAYER', 'COACH', 'CLUB', 'MATCH'], full: 87, view: 'VW_ONT_THING' },
+    { name: 'Person', parent: 'Thing', abs: true, x: 72, y: 128, col: 'var(--person)', types: ['PLAYER', 'COACH'], full: 52, view: 'VW_ONT_PERSON' },
+    { name: 'Organization', parent: 'Thing', abs: true, x: 192, y: 128, col: 'var(--org)', types: ['CLUB'], full: 15, view: 'VW_ONT_ORGANIZATION' },
+    { name: 'Event', parent: 'Thing', abs: true, x: 300, y: 128, col: 'var(--match)', types: ['MATCH'], full: 20, view: 'VW_ONT_EVENT' },
+    { name: 'Player', parent: 'Person', abs: false, x: 36, y: 228, col: 'var(--player)', types: ['PLAYER'], full: 41, view: 'V_PLAYER' },
+    { name: 'Coach', parent: 'Person', abs: false, x: 112, y: 228, col: 'var(--coach)', types: ['COACH'], full: 11, view: 'V_COACH' },
+    { name: 'Club', parent: 'Organization', abs: false, x: 192, y: 228, col: 'var(--club)', types: ['CLUB'], full: 15, view: 'V_CLUB' },
+    { name: 'Match', parent: 'Event', abs: false, x: 300, y: 228, col: 'var(--match)', types: ['MATCH'], full: 20, view: 'V_MATCH' }
+  ];
+  const CM = {}; C.forEach((c) => (CM[c.name] = c));
+  const gl = el('g', null, svg), gn = el('g', null, svg);
+  C.forEach((c) => {
+    if (!c.parent) return;
+    const p = CM[c.parent];
+    const ln = el('path', { d: `M${p.x},${p.y + 15} C${p.x},${(p.y + c.y) / 2} ${c.x},${(p.y + c.y) / 2} ${c.x},${c.y - 15}` }, gl);
+    Object.assign(ln.style, { stroke: 'var(--line)', strokeWidth: '1.6', fill: 'none' });
+    c.link = ln;
+  });
+  C.forEach((c) => {
+    const w = Math.max(58, c.name.length * 7.6 + 18);
+    const g = el('g', { transform: `translate(${c.x},${c.y})`, class: 'hoverable' }, gn);
+    const r = el('rect', { x: -w / 2, y: -15, width: w, height: 30, rx: 15 }, g);
+    Object.assign(r.style, { fill: 'var(--bg)', stroke: c.col, strokeWidth: '2', strokeDasharray: c.abs ? '5 4' : 'none', transition: 'fill .2s' });
+    const t = el('text', { y: 5, 'text-anchor': 'middle', text: c.name }, g);
+    Object.assign(t.style, { fontSize: '13px', fontWeight: '600', fill: c.col });
+    c.g = g; c.r = r; c.t = t;
+    g.addEventListener('click', () => select(c.name));
+    g.addEventListener('pointerenter', () => select(c.name));
+  });
+  const lg = el('text', { x: 180, y: 285, 'text-anchor': 'middle', text: 'dashed = IS_ABSTRACT', style: { fontSize: '11px', fill: 'var(--muted)' } }, svg);
+  lg.style.fill = 'var(--muted)';
+
+  const G = makeGraph($('g3'));
+  const panel = $('cls-panel');
+  function select(name) {
+    const c = CM[name];
+    C.forEach((x) => {
+      const on = x === c;
+      x.r.style.fill = on ? x.col : 'var(--bg)';
+      x.t.style.fill = on ? 'var(--bg)' : x.col;
+      let under = false, y = x;
+      while (y) { if (y === c) { under = true; break; } y = CM[y.parent]; }
+      if (x.link) { x.link.style.stroke = under && x !== c ? c.col : 'var(--line)'; x.link.style.strokeWidth = under && x !== c ? 3 : 1.6; }
+    });
+    const ts = new Set(c.types);
+    let cnt = {};
+    G.nodes.forEach((x) => {
+      const on = ts.has(x.n.type);
+      x.g.style.opacity = on ? 1 : 0.18; x.halo.style.opacity = on ? 1 : 0;
+      x.halo.style.stroke = c.col;
+      if (on) cnt[x.n.type] = (cnt[x.n.type] || 0) + 1;
+    });
+    G.edges.forEach((x) => (x.p.style.opacity = 0.18));
+    const parts = Object.entries(cnt).map(([k, v]) => `${v} ${v > 1 ? { PLAYER: 'players', COACH: 'coaches', CLUB: 'clubs', MATCH: 'matches' }[k] : k.toLowerCase()}`).join(', ');
+    let sqlTxt;
+    if (c.abs && c.name !== 'Thing') sqlTxt = `SELECT SUBTYPE, COUNT(*) FROM ${c.view} GROUP BY SUBTYPE;`;
+    else if (c.name === 'Thing') sqlTxt = `SELECT SUBTYPE, COUNT(*) FROM ${c.view} GROUP BY SUBTYPE;  -- Person / Organization / Event`;
+    else sqlTxt = `SELECT COUNT(*) FROM ${c.view};  -- KG_NODE WHERE NODE_TYPE = '${c.types[0]}'`;
+    const note = c.name === 'Thing'
+      ? 'Thing is the root. The generator emits a view for every abstract class, so Thing gets one too, unioning the mappings of its children.'
+      : c.abs ? `${c.name} is abstract: no row in KG_NODE has this type. Its view is a UNION ALL of its subclasses' views.`
+        : `${c.name} is concrete: a plain filtered view over KG_NODE.`;
+    panel.innerHTML = `<h4 style="color:${c.col}">${c.name}${c.abs ? ' (abstract)' : ''}</h4>${note} In this subgraph: ${parts}. In the full sample dataset: <strong>${c.full}</strong>.<pre>${esc(sqlTxt)}</pre>`;
+  }
+  select('Person');
+})();
+
+// ======================= FIG 4: concrete -> abstract =======================
+(function () {
+  const svg = $('g4');
+  const G = makeGraph(svg);
+  const s = $('g4-a');
+  const lgA = el('g', { transform: 'translate(18,26)' }, svg), lgB = el('g', { transform: 'translate(18,26)' }, svg);
+  function legend(g, items) {
+    items.forEach(([txt, col], i) => {
+      const y = i * 20;
+      const l = el('line', { x1: 0, y1: y, x2: 22, y2: y }, g); Object.assign(l.style, { stroke: col, strokeWidth: '3', strokeLinecap: 'round' });
+      const t = el('text', { x: 30, y: y + 4, text: txt }, g); Object.assign(t.style, { fontSize: '12px', fontFamily: 'ui-monospace, Menlo, monospace', fill: col, fontWeight: '600' });
+    });
+  }
+  legend(lgA, [['PLAYS_FOR  Player → Club', 'var(--player)'], ['COACHES    Coach → Club', 'var(--coach)']]);
+  legend(lgB, [['works_for  Person → Organization', 'var(--works)']]);
+  const mix = (a, c1, c2) => `color-mix(in srgb, ${c2} ${Math.round(a * 100)}%, ${c1})`;
+  function draw() {
+    const a = +s.value;
+    G.edges.forEach((x) => {
+      if (x.e.type === 'PLAYS_FOR' || x.e.type === 'COACHES') { x.p.style.stroke = mix(a, EDGECOL[x.e.type], 'var(--works)'); x.p.style.opacity = 1; }
+      else x.p.style.opacity = 1 - 0.75 * a;
+    });
+    G.nodes.forEach((x) => {
+      const t = x.n.type;
+      if (t === 'PLAYER' || t === 'COACH') x.shape.style.fill = mix(a, TYPECOL[t], 'var(--person)');
+      else if (t === 'CLUB') x.shape.style.fill = mix(a, TYPECOL[t], 'var(--org)');
+      else x.g.style.opacity = 1 - 0.7 * a;
+    });
+    lgA.style.opacity = 1 - a; lgB.style.opacity = a;
+  }
+  s.addEventListener('input', draw);
+  draw();
+})();
+
+// ======================= FIG 5: view generator =======================
+(function () {
+  const svg = $('gen');
+  const mono = { fontFamily: 'ui-monospace, Menlo, monospace', fontSize: '10.5px' };
+  function card(x, y, w, title, cols, rows, rh) {
+    const g = el('g', { transform: `translate(${x},${y})` }, svg);
+    const H = 26 + rows.length * rh + 6;
+    const bg = el('rect', { width: w, height: H, rx: 8 }, g); Object.assign(bg.style, { fill: 'var(--bg)', stroke: 'var(--line)' });
+    const t = el('text', { x: 10, y: 17, text: title }, g); Object.assign(t.style, mono, { fontWeight: '700', fontSize: '11.5px' });
+    const rowEls = rows.map((r, i) => {
+      const ry = 26 + i * rh;
+      const hl = el('rect', { x: 3, y: ry - 1, width: w - 6, height: rh, rx: 3 }, g); Object.assign(hl.style, { fill: 'var(--hl)', opacity: '0', transition: 'opacity .25s' });
+      r.forEach((cell, j) => { const tx = el('text', { x: 10 + cols[j], y: ry + rh - 5, text: cell }, g); Object.assign(tx.style, mono); if (cell === 'TRUE') tx.style.fill = 'var(--person)'; });
+      return hl;
+    });
+    return { g, rowEls };
+  }
+  const cls = card(8, 8, 250, 'ONT_CLASS', [0, 92, 190], [
+    ['Thing', '—', 'TRUE'], ['Person', 'Thing', 'TRUE'], ['Organization', 'Thing', 'TRUE'], ['Event', 'Thing', 'TRUE'],
+    ['Player', 'Person', 'FALSE'], ['Coach', 'Person', 'FALSE'], ['Club', 'Organization', 'FALSE'], ['Match', 'Event', 'FALSE']], 16);
+  const cmap = card(8, 186, 250, 'ONT_CLASS_MAP', [0, 92, 170], [
+    ['Player', 'V_PLAYER', 'NODE_ID'], ['Coach', 'V_COACH', 'NODE_ID'], ['Club', 'V_CLUB', 'NODE_ID'], ['Match', 'V_MATCH', 'NODE_ID'],
+    ['Person', 'V_PLAYER', 'NODE_ID'], ['Person', 'V_COACH', 'NODE_ID'], ['Organization', 'V_CLUB', 'NODE_ID'], ['Event', 'V_MATCH', 'NODE_ID']], 16);
+  const rmap = card(274, 226, 214, 'ONT_REL_MAP (4 of 10)', [0, 78], [
+    ['PLAYS_FOR', 'V_PLAYS_FOR'], ['COACHES', 'V_COACHES'], ['works_for', 'V_PLAYS_FOR'], ['works_for', 'V_COACHES']], 16);
+  // procedure
+  const pg = el('g', { transform: 'translate(381,120)' }, svg);
+  const pbox = el('rect', { x: -95, y: -48, width: 190, height: 96, rx: 12 }, pg); Object.assign(pbox.style, { fill: 'var(--bg)', stroke: 'var(--ink)', strokeWidth: '1.5' });
+  const gear = el('g', { transform: 'translate(0,-6)' }, pg);
+  let gd = '';
+  for (let i = 0; i < 10; i++) {
+    const a0 = (i / 10) * Math.PI * 2, a1 = a0 + Math.PI / 10;
+    const p = (a, r) => `${(Math.cos(a) * r).toFixed(1)},${(Math.sin(a) * r).toFixed(1)}`;
+    gd += (i ? 'L' : 'M') + p(a0, 22) + 'L' + p(a0 + 0.08, 28) + 'L' + p(a1 - 0.08, 28) + 'L' + p(a1, 22);
+  }
+  const gp = el('path', { d: gd + 'Z' }, gear); Object.assign(gp.style, { fill: 'var(--faint)', stroke: 'var(--ink)', strokeWidth: '1.4' });
+  const gh = el('circle', { r: 8 }, gear); Object.assign(gh.style, { fill: 'var(--bg)', stroke: 'var(--ink)', strokeWidth: '1.4' });
+  const pt = el('text', { y: 38, 'text-anchor': 'middle', text: 'SP_GENERATE_ONTOLOGY_VIEWS()' }, pg); Object.assign(pt.style, mono, { fontSize: '10px', fontWeight: '700' });
+  // outputs
+  function outView(x, y, name, kids, col) {
+    const g = el('g', { transform: `translate(${x},${y})` }, svg);
+    g.style.transition = 'opacity .35s'; g.style.opacity = 0;
+    const b = el('rect', { width: 230, height: 34, rx: 8 }, g); Object.assign(b.style, { fill: col, opacity: '0.16', stroke: 'none' });
+    const b2 = el('rect', { width: 230, height: 34, rx: 8 }, g); Object.assign(b2.style, { fill: 'none', stroke: col, strokeWidth: '2' });
+    const t = el('text', { x: 115, y: 22, 'text-anchor': 'middle', text: name }, g); Object.assign(t.style, mono, { fontSize: '12px', fontWeight: '700', fill: col });
+    const u = el('text', { x: 115, y: 52, 'text-anchor': 'middle', text: 'UNION ALL' }, g); Object.assign(u.style, mono, { fontSize: '9.5px', fill: 'var(--muted)' });
+    kids.forEach((k, i) => {
+      const kx = 10 + i * 112;
+      const ln = el('line', { x1: 115, y1: 34, x2: kx + 50, y2: 62 }, g); Object.assign(ln.style, { stroke: 'var(--line)', strokeWidth: '1.4' });
+      const kb = el('rect', { x: kx, y: 62, width: 100, height: 26, rx: 6 }, g); Object.assign(kb.style, { fill: 'var(--bg)', stroke: 'var(--line)' });
+      const kt = el('text', { x: kx + 50, y: 79, 'text-anchor': 'middle', text: k }, g); Object.assign(kt.style, mono);
+    });
+    return g;
+  }
+  const oP = outView(520, 30, 'VW_ONT_PERSON', ['V_PLAYER', 'V_COACH'], 'var(--person)');
+  const oW = outView(520, 205, 'VW_ONT_WORKS_FOR', ['V_PLAYS_FOR', 'V_COACHES'], 'var(--works)');
+  function arrow(x1, y1, x2, y2) {
+    const p = el('path', { d: `M${x1},${y1} C${x1 + 40},${y1} ${x2 - 40},${y2} ${x2},${y2}` }, svg);
+    Object.assign(p.style, { fill: 'none', stroke: 'var(--ink)', strokeWidth: '1.5', strokeDasharray: '4 4', opacity: '0', transition: 'opacity .3s' });
+    return p;
+  }
+  const aP = arrow(476, 110, 518, 47), aW = arrow(476, 140, 518, 222);
+  const inC = arrow(258, 80, 286, 110), inM = arrow(258, 250, 286, 140);
+  const STEPS = [
+    { hl: [], panel: '<h4>Metadata only</h4>Three tables of plain rows. <code>ONT_CLASS</code> says what exists and what inherits from what. <code>ONT_CLASS_MAP</code> says which concrete view implements each class. <code>ONT_REL_MAP</code> does the same for relationships. No abstract view exists yet.' },
+    { hl: [[cls, [0, 1, 2, 3]]], arrows: [inC], spin: true, panel: '<h4>Find the abstract classes</h4><pre>SELECT DISTINCT CLASS_NAME, PARENT_CLASS_NAME, DESCRIPTION\nFROM ONT_CLASS\nWHERE IS_ABSTRACT = TRUE AND ONTOLOGY_NAME = \'SOCCER_V1\';</pre>Four rows come back: Thing, Person, Organization, Event. The procedure loops over them.' },
+    { hl: [[cls, [1, 4, 5]], [cmap, [0, 1, 4, 5]]], arrows: [inC, inM, aP], out: [oP], spin: true, panel: '<h4>Person &rarr; VW_ONT_PERSON</h4>For Person it collects every <code>ONT_CLASS_MAP</code> row whose class <em>is</em> Person or <em>has parent</em> Person, and emits one <code>UNION ALL</code> branch per row. The repository also ships the resulting abstract view pre-built in <code>07_abstract_views.sql</code>:<pre>CREATE OR REPLACE VIEW VW_ONT_PERSON AS\n  SELECT NODE_ID AS ID, \'Player\' AS SUBTYPE, \'V_PLAYER\' AS SRC_VIEW FROM V_PLAYER\n  UNION ALL\n  SELECT NODE_ID AS ID, \'Coach\'  AS SUBTYPE, \'V_COACH\'  AS SRC_VIEW FROM V_COACH;</pre>The same happens for Organization, Event and Thing.' },
+    { hl: [[rmap, [2, 3]]], arrows: [aP, aW], out: [oP, oW], spin: true, panel: '<h4>works_for &rarr; VW_ONT_WORKS_FOR</h4>Next, every relationship in <code>ONT_RELATION_DEF</code> whose domain is abstract. <code>works_for</code> runs from Person to Organization; its <code>ONT_REL_MAP</code> rows point at <code>V_PLAYS_FOR</code> and <code>V_COACHES</code>. The pre-built version in <code>07_abstract_views.sql</code> reads them through <code>REL_RESOLVED</code>, but the shape is the same:<pre>CREATE OR REPLACE VIEW VW_ONT_WORKS_FOR AS\n  SELECT SRC_ID AS SUBJECT_ID, \'Player\' AS SUBJECT_CLASS,\n         DST_ID AS OBJECT_ID, \'Club\' AS OBJECT_CLASS, \'PLAYS_FOR\' AS VIA_REL, ...\n  FROM REL_RESOLVED WHERE REL_NAME = \'PLAYS_FOR\'\n  UNION ALL\n  SELECT SRC_ID, \'Coach\', DST_ID, \'Club\', \'COACHES\', ...\n  FROM REL_RESOLVED WHERE REL_NAME = \'COACHES\';</pre>' },
+    { hl: [], arrows: [aP, aW], out: [oP, oW], panel: '<h4>Done</h4>The procedure returns a log line per view, in the form <code>OK: VW_ONT_PERSON created with N sources</code>. Separately, <code>SP_RUN_ONTOLOGY_INFERENCE()</code> reads <code>ONT_RULE</code> to derive relationships such as the inverse <code>employs</code>. The repository warns that the generator builds dynamic SQL from metadata, so only trusted administrators should be able to write to these mapping tables.' }
+  ];
+  const s = $('gen-s'), panel = $('gen-panel');
+  let spinning = false, ang = 0, raf = 0;
+  function spin() { ang += 1.8; gear.setAttribute('transform', `translate(0,-6) rotate(${ang})`); raf = spinning ? requestAnimationFrame(spin) : 0; }
+  function draw() {
+    const st = STEPS[+s.value];
+    [cls, cmap, rmap].forEach((c) => c.rowEls.forEach((r) => (r.style.opacity = 0)));
+    (st.hl || []).forEach(([c, idx]) => idx.forEach((i) => (c.rowEls[i].style.opacity = 0.45)));
+    [aP, aW, inC, inM].forEach((a) => (a.style.opacity = (st.arrows || []).includes(a) ? 1 : 0));
+    [oP, oW].forEach((o) => (o.style.opacity = (st.out || []).includes(o) ? 1 : 0));
+    panel.innerHTML = st.panel;
+    spinning = !!st.spin;
+    if (spinning && !raf) raf = requestAnimationFrame(spin);
+  }
+  s.addEventListener('input', draw);
+  $('gen-prev').addEventListener('click', () => { s.value = Math.max(0, +s.value - 1); draw(); });
+  $('gen-next').addEventListener('click', () => { s.value = Math.min(4, +s.value + 1); draw(); });
+  draw();
+})();
+
+window.__ONT = { el, h, $, clamp, esc, dy, pretty, iso, fromDy, N, NM, E, makeGraph, TYPECOL, EDGECOL };
+})();
+(function () {
+'use strict';
+const { el, h, $, clamp, esc, dy, pretty, iso, NM, E, makeGraph } = window.__ONT;
+const mono = { fontFamily: 'ui-monospace, Menlo, monospace' };
+
+// ======================= FIG 6: five-layer stack =======================
+(function () {
+  const svg = $('stack');
+  const L = [
+    { n: 1, name: 'Physical storage', sub: 'KG_NODE · KG_EDGE', col: 'var(--club)', desc: '<h4>Layer 1 · Physical storage</h4>Two tables. <code>KG_NODE</code> (NODE_ID, NODE_TYPE, NAME, PROPS VARIANT) is clustered by type; <code>KG_EDGE</code> (SRC_ID, DST_ID, EDGE_TYPE, WEIGHT, PROPS, EFFECTIVE_START/END) is clustered by type and endpoints. Every fact in the system lives here.' },
+    { n: 2, name: 'Ontology metadata', sub: 'ONT_CLASS · ONT_RELATION_DEF · …', col: 'var(--person)', desc: '<h4>Layer 2 · Ontology metadata</h4>Classes and their hierarchy, relationship definitions with domain, range, cardinality and inverse, typed properties, inference rules, interfaces, action types, and role-based permissions. Business meaning stored as rows, not code.' },
+    { n: 3, name: 'Generated views', sub: 'V_* · REL_RESOLVED · VW_ONT_*', col: 'var(--player)', desc: '<h4>Layer 3 · Generated views</h4>Typed views over the graph tables, a unified relationship view, and abstract ontology views produced by <code>SP_GENERATE_ONTOLOGY_VIEWS()</code>. Polymorphism becomes <code>UNION ALL</code>.' },
+    { n: 4, name: 'Semantic models', sub: 'graph · ontology · governance', col: 'var(--coach)', desc: '<h4>Layer 4 · Semantic models</h4>Three Cortex Analyst YAML models on a stage: <code>soccer_semantic_model.yml</code> (concrete views), <code>soccer_semantic_model_ontology.yml</code> (abstract views + REL_RESOLVED) and <code>soccer_metadata_governance_model.yml</code> (the ONT_* tables). Each turns English into SQL for its own slice of the stack.' },
+    { n: 5, name: 'Cortex Agent', sub: '3 Analyst tools + 5 graph tools (SPCS)', col: 'var(--works)', desc: '<h4>Layer 5 · Cortex Agent</h4>An agent with orchestration instructions and eight tools. It reads the question, picks a semantic model or a graph algorithm (NetworkX in Snowpark Container Services), may chain several, and writes the final answer.' }
+  ];
+  const X0 = 40, W = 360, S = 96, D = 66, T = 14;
+  const groups = L.map((l) => {
+    const g = el('g', { class: 'hoverable' }, svg);
+    l.g = g;
+    l.top = el('polygon', null, g); l.front = el('polygon', null, g); l.side = el('polygon', null, g);
+    Object.assign(l.top.style, { fill: `color-mix(in srgb, ${l.col} 20%, var(--bg))`, stroke: l.col, strokeWidth: '1.5', strokeLinejoin: 'round' });
+    Object.assign(l.front.style, { fill: `color-mix(in srgb, ${l.col} 55%, var(--bg))`, stroke: l.col, strokeWidth: '1.5', strokeLinejoin: 'round' });
+    Object.assign(l.side.style, { fill: `color-mix(in srgb, ${l.col} 40%, var(--bg))`, stroke: l.col, strokeWidth: '1.5', strokeLinejoin: 'round' });
+    l.deco = el('g', null, g);
+    l.lbl = el('g', null, svg);
+    const t1 = el('text', { x: 0, y: 0, text: `Layer ${l.n} · ${l.name}` }, l.lbl); Object.assign(t1.style, { fontSize: '15px', fontWeight: '700', fill: l.col });
+    const t2 = el('text', { x: 0, y: 17, text: l.sub }, l.lbl); Object.assign(t2.style, mono, { fontSize: '10px', fill: 'var(--muted)' });
+    l.lead = el('line', null, svg); Object.assign(l.lead.style, { stroke: l.col, strokeWidth: '1', strokeDasharray: '2 3' });
+    g.addEventListener('pointerenter', () => pick(l));
+    g.addEventListener('click', () => pick(l));
+    return g;
+  });
+  // decoration in face-local (u,v) coords
+  function mapUV(y) { return (u, v) => [X0 + S * (1 - v) + W * u, y + D * v]; }
+  function deco(l, y) {
+    const g = l.deco; while (g.firstChild) g.removeChild(g.firstChild);
+    const P = mapUV(y);
+    const dot = (u, v, r, col) => { const [x, yy] = P(u, v); const c = el('circle', { cx: x, cy: yy, r }, g); c.style.fill = col; };
+    const line = (u1, v1, u2, v2, col) => { const [a, b] = P(u1, v1), [c, d] = P(u2, v2); const ln = el('line', { x1: a, y1: b, x2: c, y2: d }, g); Object.assign(ln.style, { stroke: col, strokeWidth: '1.2' }); };
+    const quad = (u, v, w, hh, col) => { const pts = [P(u, v), P(u + w, v), P(u + w, v + hh), P(u, v + hh)].map((p) => p.join(',')).join(' '); const q = el('polygon', { points: pts }, g); Object.assign(q.style, { fill: col, opacity: '0.85' }); };
+    if (l.n === 1) {
+      const pts = [[0.12, 0.3], [0.25, 0.7], [0.38, 0.35], [0.5, 0.65], [0.62, 0.25], [0.75, 0.6], [0.88, 0.4]];
+      for (let i = 0; i < pts.length - 1; i++) line(...pts[i], ...pts[i + 1], 'var(--line)');
+      line(...pts[0], ...pts[2], 'var(--line)'); line(...pts[3], ...pts[5], 'var(--line)');
+      pts.forEach(([u, v], i) => dot(u, v, i % 3 === 0 ? 5 : 3.2, ['var(--club)', 'var(--player)', 'var(--coach)'][i % 3]));
+    } else if (l.n === 2) {
+      line(0.5, 0.2, 0.3, 0.5, 'var(--person)'); line(0.5, 0.2, 0.7, 0.5, 'var(--person)');
+      line(0.3, 0.5, 0.2, 0.8, 'var(--person)'); line(0.3, 0.5, 0.4, 0.8, 'var(--person)'); line(0.7, 0.5, 0.7, 0.8, 'var(--person)');
+      [[0.5, 0.2], [0.3, 0.5], [0.7, 0.5], [0.2, 0.8], [0.4, 0.8], [0.7, 0.8]].forEach(([u, v]) => dot(u, v, 3.5, 'var(--person)'));
+    } else if (l.n === 3) {
+      for (let i = 0; i < 5; i++) quad(0.1 + i * 0.17, 0.25, 0.12, 0.45, i < 2 ? 'var(--person)' : 'var(--player)');
+    } else if (l.n === 4) {
+      for (let i = 0; i < 3; i++) { quad(0.18 + i * 0.25, 0.18, 0.14, 0.62, 'var(--coach)'); }
+    } else {
+      dot(0.3, 0.5, 8, 'var(--works)');
+      for (let i = 0; i < 8; i++) { line(0.3, 0.5, 0.55 + (i % 4) * 0.11, i < 4 ? 0.3 : 0.72, 'var(--works)'); dot(0.55 + (i % 4) * 0.11, i < 4 ? 0.3 : 0.72, 3.2, i < 3 ? 'var(--coach)' : 'var(--works)'); }
+    }
+  }
+  const s = $('stack-x');
+  function draw() {
+    const k = +s.value;
+    const gap = T + 4 + k * 74;
+    const total = 4 * gap + D + T;
+    const top = (470 - total) / 2;
+    const lblOp = clamp((gap - 40) / 30, 0, 1);
+    // painter's order: bottom layer first
+    L.forEach((l, i) => {
+      const y = top + (4 - i) * gap;
+      const p = (pts) => pts.map((q) => q.join(',')).join(' ');
+      l.top.setAttribute('points', p([[X0 + S, y], [X0 + S + W, y], [X0 + W, y + D], [X0, y + D]]));
+      l.front.setAttribute('points', p([[X0, y + D], [X0 + W, y + D], [X0 + W, y + D + T], [X0, y + D + T]]));
+      l.side.setAttribute('points', p([[X0 + W, y + D], [X0 + S + W, y], [X0 + S + W, y + T], [X0 + W, y + D + T]]));
+      deco(l, y);
+      l.lbl.setAttribute('transform', `translate(${X0 + S + W + 34},${y + D / 2})`);
+      l.lbl.style.opacity = lblOp;
+      l.lead.setAttribute('x1', X0 + S + W - 10); l.lead.setAttribute('y1', y + D / 2);
+      l.lead.setAttribute('x2', X0 + S + W + 28); l.lead.setAttribute('y2', y + D / 2);
+      l.lead.style.opacity = lblOp;
+    });
+    // re-append in painter order (bottom = layer 1 first)
+    L.forEach((l) => svg.appendChild(l.g));
+  }
+  const panel = $('stack-panel');
+  function pick(l) {
+    L.forEach((x) => (x.g.style.opacity = x === l ? 1 : 0.55));
+    panel.innerHTML = l.desc;
+  }
+  s.addEventListener('input', draw);
+  draw();
+  panel.innerHTML = '<h4>Five layers</h4>From bottom to top: storage, meaning, views, vocabulary, reasoning. Each layer only talks to the one directly beneath it.';
+})();
+
+// ======================= FIG 7: routing =======================
+const TOOLS = [
+  { n: 'query_soccer_data', g: 'analyst', what: 'Cortex Analyst · soccer_semantic_model.yml', over: 'V_PLAYER, V_COACH, V_CLUB, V_MATCH, V_PLAYS_FOR, V_COACHES, V_PLAYED_IN, V_HOME_TEAM, V_AWAY_TEAM' },
+  { n: 'query_soccer_ontology', g: 'analyst', what: 'Cortex Analyst · soccer_semantic_model_ontology.yml', over: 'VW_ONT_PERSON, VW_ONT_ORGANIZATION, VW_ONT_EVENT, VW_ONT_WORKS_FOR, VW_ONT_PARTICIPATES_IN, REL_RESOLVED' },
+  { n: 'query_metadata_governance', g: 'analyst', what: 'Cortex Analyst · soccer_metadata_governance_model.yml', over: 'ONT_CLASS, ONT_RELATION_DEF, ONT_PROPERTY, ONT_PERMISSION, ONT_ROLE, ONT_RULE' },
+  { n: 'centrality_tool', g: 'graph', what: 'SPCS · NetworkX', over: 'betweenness, closeness, degree, eigenvector centrality' },
+  { n: 'community_detection_tool', g: 'graph', what: 'SPCS · NetworkX', over: 'Louvain community detection' },
+  { n: 'shortest_path_tool', g: 'graph', what: 'SPCS · NetworkX', over: "Dijkstra's shortest path" },
+  { n: 'temporal_analysis_tool', g: 'graph', what: 'SPCS · NetworkX', over: 'time-series network metrics' },
+  { n: 'transfer_analysis_tool', g: 'graph', what: 'SPCS · NetworkX', over: 'custom transfer-pattern analysis' }
+];
+(function () {
+  const svg = $('route');
+  const qs = [
+    ['Who plays for Real Madrid?', 0, 'Specific entity query over a concrete relationship (PLAYS_FOR).'],
+    ['Who works for Real Madrid?', 1, 'Abstract, cross-type query: works_for spans players and coaches.'],
+    ['What object types exist?', 2, 'Schema introspection: the answer lives in ONT_CLASS, not in the graph.'],
+    ['How is Messi connected to Ronaldo?', 5, 'Network path finding between two specific entities.'],
+    ['Who are the most influential players?', 3, '"Influential" means network position, not statistics.'],
+    ['What communities exist?', 4, 'Discovering hidden groups in the graph.'],
+    ['How has the transfer network evolved?', 6, 'Change of network structure over time.'],
+    ['Which clubs trade most frequently?', 7, 'Transfer-specific patterns between clubs.']
+  ];
+  const qBox = el('rect', { x: 10, y: 140, width: 248, height: 50, rx: 10 }, svg); Object.assign(qBox.style, { fill: 'var(--bg)', stroke: 'var(--line)' });
+  const qT = el('text', { x: 134, y: 170, 'text-anchor': 'middle', text: '' }, svg); Object.assign(qT.style, { fontSize: '12.5px', fontStyle: 'italic' });
+  const qa = el('line', { x1: 258, y1: 165, x2: 298, y2: 165 }, svg); Object.assign(qa.style, { stroke: 'var(--ink)', strokeWidth: '1.5' });
+  const ag = el('g', { transform: 'translate(336,165)' }, svg);
+  const ac = el('circle', { r: 36 }, ag); Object.assign(ac.style, { fill: 'color-mix(in srgb, var(--works) 18%, var(--bg))', stroke: 'var(--works)', strokeWidth: '2' });
+  el('text', { y: -2, 'text-anchor': 'middle', text: 'Cortex', style: {} }, ag).style.fontSize = '12px';
+  const at2 = el('text', { y: 13, 'text-anchor': 'middle', text: 'Agent' }, ag); at2.style.fontSize = '12px';
+  [['Cortex Analyst', 10], ['Graph analytics (SPCS)', 140]].forEach(([t, y]) => { const x = el('text', { x: 470, y, text: t }, svg); Object.assign(x.style, { fontSize: '11px', fill: 'var(--muted)', fontWeight: '600' }); });
+  const links = [], boxes = [];
+  TOOLS.forEach((t, i) => {
+    const y = 18 + i * 36 + (i >= 3 ? 30 : 0);
+    const lk = el('path', { d: `M372,165 C420,165 420,${y + 15} 470,${y + 15}` }, svg);
+    Object.assign(lk.style, { fill: 'none', stroke: 'var(--line)', strokeWidth: '1.3', transition: 'stroke .2s, stroke-width .2s' });
+    links.push(lk);
+    const g = el('g', { transform: `translate(470,${y})` }, svg);
+    const r = el('rect', { width: 270, height: 30, rx: 7 }, g); Object.assign(r.style, { fill: 'var(--bg)', stroke: 'var(--line)', transition: 'fill .2s' });
+    const tx = el('text', { x: 12, y: 19, text: t.n }, g); Object.assign(tx.style, mono, { fontSize: '11.5px' });
+    boxes.push({ r, tx });
+  });
+  const pulse = el('circle', { r: 5 }, svg); Object.assign(pulse.style, { fill: 'var(--hl)', stroke: 'var(--ink)', strokeWidth: '1' });
+  let raf = 0;
+  const panel = $('route-panel'), wrap = $('route-q');
+  const btns = qs.map((q, i) => { const b = h('button', { text: q[0] }, wrap); b.addEventListener('click', () => pick(i)); return b; });
+  function pick(i) {
+    const [q, t, why] = qs[i];
+    btns.forEach((b, j) => b.classList.toggle('on', j === i));
+    qT.textContent = '“' + q + '”';
+    links.forEach((l, j) => { l.style.stroke = j === t ? 'var(--works)' : 'var(--line)'; l.style.strokeWidth = j === t ? 3 : 1.3; });
+    boxes.forEach((b, j) => { b.r.style.fill = j === t ? 'color-mix(in srgb, var(--works) 22%, var(--bg))' : 'var(--bg)'; b.r.style.stroke = j === t ? 'var(--works)' : 'var(--line)'; b.tx.style.fontWeight = j === t ? '700' : '400'; });
+    const T = TOOLS[t];
+    panel.innerHTML = `<h4><code>${T.n}</code></h4>${esc(why)}<br><span style="color:var(--muted)">${esc(T.what)} &mdash; ${esc(T.over)}</span>`;
+    cancelAnimationFrame(raf);
+    const path = links[t], len = path.getTotalLength();
+    let t0 = 0;
+    function step(ts) { if (!t0) t0 = ts; const f = clamp((ts - t0) / 700, 0, 1); const e = f * f * (3 - 2 * f); const p = path.getPointAtLength(e * len); pulse.setAttribute('cx', p.x); pulse.setAttribute('cy', p.y); if (f < 1) raf = requestAnimationFrame(step); }
+    raf = requestAnimationFrame(step);
+  }
+  pick(1);
+})();
+
+// ======================= FIG 8: the journey =======================
+(function () {
+  const svg = $('jr');
+  const ids = {};
+  function box(id, x, y, w, hh, label, opts) {
+    opts = opts || {};
+    const g = el('g', null, svg);
+    const r = el('rect', { x, y, width: w, height: hh, rx: opts.rx || 8 }, g);
+    Object.assign(r.style, { fill: opts.fill || 'var(--bg)', stroke: opts.stroke || 'var(--line)', strokeWidth: opts.sw || '1.4', transition: 'fill .3s, stroke .3s, stroke-width .3s' });
+    let t = null;
+    if (label) {
+      t = el('text', { x: x + w / 2, y: y + (opts.ty || hh / 2 + 4), 'text-anchor': 'middle', text: label }, g);
+      Object.assign(t.style, opts.mono ? Object.assign({}, mono, { fontSize: (opts.fs || 9.5) + 'px' }) : { fontSize: (opts.fs || 12) + 'px', fontWeight: opts.bold ? '700' : '500' });
+    }
+    ids[id] = { g, r, t, col: opts.col || 'var(--ink)', baseFill: opts.fill || 'var(--bg)', baseStroke: opts.stroke || 'var(--line)', cx: x + w / 2, top: y, bot: y + hh };
+    return ids[id];
+  }
+  function text(x, y, s, st) { const t = el('text', { x, y, text: s }, svg); Object.assign(t.style, st || {}); return t; }
+  // user
+  const ug = el('g', { transform: 'translate(70,200)' }, svg);
+  const uh = el('circle', { cy: -14, r: 13 }, ug); Object.assign(uh.style, { fill: 'var(--faint)', stroke: 'var(--ink)', strokeWidth: '1.4' });
+  const ub = el('path', { d: 'M-24,30 C-24,6 24,6 24,30 Z' }, ug); Object.assign(ub.style, { fill: 'var(--faint)', stroke: 'var(--ink)', strokeWidth: '1.4' });
+  text(70, 255, 'You', { fontSize: '13px', fontWeight: '700', textAnchor: 'middle' });
+  // agent
+  box('agent', 150, 30, 230, 410, null, { rx: 14, fill: 'color-mix(in srgb, var(--works) 7%, var(--bg))', stroke: 'var(--works)', col: 'var(--works)' });
+  text(265, 54, 'Cortex Agent', { fontSize: '14px', fontWeight: '700', textAnchor: 'middle', fill: 'var(--works)' });
+  text(265, 70, 'SOCCER_ONTOLOGY_CORTEX_CODE', Object.assign({}, mono, { fontSize: '8.5px', textAnchor: 'middle', fill: 'var(--muted)' }));
+  box('orch', 172, 84, 186, 44, 'orchestration model', { col: 'var(--works)', fs: 11.5 });
+  text(265, 152, 'tools', { fontSize: '10px', textAnchor: 'middle', fill: 'var(--muted)' });
+  TOOLS.forEach((t, i) => box('tool' + i, 172, 160 + i * 32, 186, 26, t.n, { mono: true, fs: 9.5, col: 'var(--works)' }));
+  // analyst
+  box('analyst', 420, 100, 170, 260, null, { rx: 14, fill: 'color-mix(in srgb, var(--coach) 7%, var(--bg))', stroke: 'var(--coach)', col: 'var(--coach)' });
+  text(505, 124, 'Cortex Analyst', { fontSize: '14px', fontWeight: '700', textAnchor: 'middle', fill: 'var(--coach)' });
+  const doc = box('yaml', 455, 140, 100, 96, null, { col: 'var(--coach)' });
+  for (let i = 0; i < 6; i++) { const l = el('line', { x1: 467, y1: 160 + i * 12, x2: 467 + [70, 52, 62, 40, 66, 48][i], y2: 160 + i * 12 }, svg); Object.assign(l.style, { stroke: 'var(--line)', strokeWidth: '2.5', strokeLinecap: 'round' }); }
+  text(505, 252, 'soccer_semantic_model', Object.assign({}, mono, { fontSize: '8.5px', textAnchor: 'middle', fill: 'var(--muted)' }));
+  text(505, 263, '_ontology.yml', Object.assign({}, mono, { fontSize: '8.5px', textAnchor: 'middle', fill: 'var(--muted)' }));
+  box('sql', 445, 280, 120, 56, null, { col: 'var(--coach)', fill: 'var(--code-bg)' });
+  text(505, 300, 'SELECT …', Object.assign({}, mono, { fontSize: '10px', textAnchor: 'middle', fontWeight: '700' }));
+  text(505, 316, 'FROM VW_ONT_WORKS_FOR', Object.assign({}, mono, { fontSize: '8px', textAnchor: 'middle' }));
+  text(505, 327, 'JOIN VW_ONT_PERSON …', Object.assign({}, mono, { fontSize: '8px', textAnchor: 'middle' }));
+  // warehouse
+  box('wh', 620, 14, 268, 442, null, { rx: 14, fill: 'color-mix(in srgb, var(--player) 6%, var(--bg))', stroke: 'var(--player)', col: 'var(--player)' });
+  text(754, 38, 'Snowflake warehouse', { fontSize: '14px', fontWeight: '700', textAnchor: 'middle', fill: 'var(--player)' });
+  text(634, 62, 'referenced by the SQL', { fontSize: '9.5px', fill: 'var(--muted)' });
+  const vw = { mono: true, fs: 9, col: 'var(--player)' };
+  box('v_wf', 634, 68, 98, 24, 'VW_ONT_WORKS_FOR', Object.assign({ col: 'var(--works)' }, { mono: true, fs: 9 }));
+  box('v_p', 738, 68, 84, 24, 'VW_ONT_PERSON', { mono: true, fs: 9, col: 'var(--person)' });
+  box('v_c', 828, 68, 50, 24, 'V_CLUB', Object.assign({}, vw, { col: 'var(--club)' }));
+  text(634, 132, 'expanded views', { fontSize: '9.5px', fill: 'var(--muted)' });
+  box('v_rr', 640, 138, 86, 24, 'REL_RESOLVED', vw);
+  box('v_pf', 630, 208, 66, 24, 'V_PLAYS_FOR', vw);
+  box('v_co', 700, 208, 60, 24, 'V_COACHES', vw);
+  box('v_pl', 768, 208, 54, 24, 'V_PLAYER', vw);
+  box('v_ch', 826, 208, 54, 24, 'V_COACH', vw);
+  text(634, 292, 'Layer 1 · physical tables', { fontSize: '9.5px', fill: 'var(--muted)' });
+  box('kg_e', 650, 300, 82, 32, 'KG_EDGE', { mono: true, fs: 11, col: 'var(--ink)', fill: 'var(--faint)' });
+  box('kg_n', 790, 300, 82, 32, 'KG_NODE', { mono: true, fs: 11, col: 'var(--ink)', fill: 'var(--faint)' });
+  box('res', 668, 372, 172, 66, null, { col: 'var(--hl)' });
+  const resT = [text(754, 390, '3 rows', { fontSize: '11px', fontWeight: '700', textAnchor: 'middle' }),
+    text(754, 405, 'Player  Kylian Mbappé', Object.assign({}, mono, { fontSize: '8.5px', textAnchor: 'middle' })),
+    text(754, 417, 'Player  Jude Bellingham', Object.assign({}, mono, { fontSize: '8.5px', textAnchor: 'middle' })),
+    text(754, 429, 'Coach   Carlo Ancelotti', Object.assign({}, mono, { fontSize: '8.5px', textAnchor: 'middle' }))];
+  // tree links
+  const TL = [['v_wf', 'v_rr'], ['v_rr', 'v_pf'], ['v_rr', 'v_co'], ['v_p', 'v_pl'], ['v_p', 'v_ch'], ['v_pf', 'kg_e'], ['v_co', 'kg_e'], ['v_pl', 'kg_n'], ['v_ch', 'kg_n'], ['v_c', 'kg_n']];
+  const tl = TL.map(([a, b], i) => {
+    const A = ids[a], B = ids[b];
+    const p = el('path', { d: `M${A.cx},${A.bot} C${A.cx},${(A.bot + B.top) / 2} ${B.cx},${(A.bot + B.top) / 2} ${B.cx},${B.top}` }, svg);
+    Object.assign(p.style, { fill: 'none', stroke: 'var(--line)', strokeWidth: '1.3', transition: 'stroke .3s, stroke-width .3s' });
+    svg.insertBefore(p, ids.wh.g.nextSibling);
+    return { p, a, b };
+  });
+  // packet
+  const trail = el('path', null, svg); Object.assign(trail.style, { fill: 'none', stroke: 'var(--hl)', strokeWidth: '3', strokeLinecap: 'round', opacity: '0.9' });
+  const dot = el('circle', { r: 7, cx: 70, cy: 200 }, svg); Object.assign(dot.style, { fill: 'var(--hl)', stroke: 'var(--ink)', strokeWidth: '1.5' });
+
+  const ANCH = [[70, 200], [265, 106], [265, 160 + 32 + 13], [505, 188], [505, 308], [683, 80], [754, 316], [754, 372], [265, 106], [70, 200]];
+  const CURVE = {
+    1: 'M70,200 C140,200 180,106 265,106',
+    2: 'M265,106 C300,140 300,180 265,205',
+    3: 'M265,205 C360,205 400,188 505,188',
+    4: 'M505,188 C540,230 540,270 505,308',
+    5: 'M505,308 C600,308 600,80 683,80',
+    6: 'M683,80 C683,180 754,220 754,316',
+    7: 'M754,316 L754,372',
+    8: 'M754,372 L754,446 C700,470 420,470 380,380 C350,300 300,160 265,106',
+    9: 'M265,106 C180,106 140,200 70,200'
+  };
+  const SQL = `SELECT p.SUBTYPE                  AS role,
+       COALESCE(vp.NAME, vc.NAME) AS person_name,
+       wf.VIA_REL                 AS relationship,
+       wf.EFFECTIVE_START, wf.EFFECTIVE_END
+FROM   VW_ONT_WORKS_FOR wf
+JOIN   VW_ONT_PERSON p ON p.ID = wf.SUBJECT_ID
+                      AND p.SUBTYPE = wf.SUBJECT_CLASS
+LEFT JOIN V_PLAYER vp  ON vp.NODE_ID = p.ID AND p.SUBTYPE = 'Player'
+LEFT JOIN V_COACH  vc  ON vc.NODE_ID = p.ID AND p.SUBTYPE = 'Coach'
+JOIN   V_CLUB c        ON c.NODE_ID = wf.OBJECT_ID
+WHERE  c.NAME = 'Real Madrid'
+  AND  wf.EFFECTIVE_START <= '2025-01-01'
+  AND (wf.EFFECTIVE_END IS NULL OR wf.EFFECTIVE_END >= '2025-01-01');`;
+  const rmEdges = E.filter((e) => e.dst === 'C1');
+  const asOf = dy('2025-01-01');
+  const edgeTbl = '<div class="tbl-wrap" style="max-height:none"><table class="kg"><tr><th>EDGE_ID</th><th>SRC_ID</th><th>EDGE_TYPE</th><th>EFFECTIVE_START</th><th>EFFECTIVE_END</th></tr>' +
+    rmEdges.slice().sort((a, b) => a.t0 - b.t0).map((e) => `<tr class="${e.t0 <= asOf && asOf <= e.t1 ? 'hot' : 'cut'}"><td>${e.id}</td><td>${NM[e.src].id}</td><td>${e.type}</td><td>${e.start}</td><td>${e.end || 'NULL'}</td></tr>`).join('') + '</table></div>';
+  const resultTbl = '<div class="tbl-wrap" style="max-height:none"><table class="kg"><tr><th>ROLE</th><th>PERSON_NAME</th><th>RELATIONSHIP</th><th>EFFECTIVE_START</th><th>EFFECTIVE_END</th></tr>' +
+    '<tr><td class="c-player">Player</td><td>Kylian Mbappé</td><td>PLAYS_FOR</td><td>2024-07-01</td><td>2029-06-30</td></tr>' +
+    '<tr><td class="c-player">Player</td><td>Jude Bellingham</td><td>PLAYS_FOR</td><td>2023-07-01</td><td>2029-06-30</td></tr>' +
+    '<tr><td class="c-coach">Coach</td><td>Carlo Ancelotti</td><td>COACHES</td><td>2021-06-01</td><td>2026-06-30</td></tr></table></div>';
+  const STEPS = [
+    { on: [], title: '1 · You ask', body: '<div class="answer">Who was working for Real Madrid on 1 January 2025?</div>Plain English. Nothing in it names a table, a column or a type. It doesn\'t say "players" or "coaches"; it says "working for".' },
+    { on: ['agent', 'orch'], title: '2 · The agent reads the question', body: 'The orchestration model follows the agent\'s instructions, which begin with a <em>question analysis</em> step: identify the data type (concrete entities, abstract patterns, or metadata), the analysis type, and the scope.<br><span class="chip">abstract relationship</span><span class="chip">descriptive</span><span class="chip">one organization</span><span class="chip">one point in time</span><br>"Working for" isn\'t a single edge type in <code>KG_EDGE</code>; it\'s a concept that spans several.' },
+    { on: ['agent', 'tool1'], dim: ['tool0'], title: '3 · It picks a tool', body: 'Of the eight tools, <code>query_soccer_ontology</code> is the one whose description covers abstract, cross-type relationships. Its neighbour <code>query_soccer_data</code> would also produce valid SQL, but against <code>V_PLAYS_FOR</code>, and would quietly drop the coach. The agent calls the tool with the question text (illustrative):<pre>{ "tool": "query_soccer_ontology",\n  "query": "Who was working for Real Madrid on 2025-01-01?" }</pre>' },
+    { on: ['analyst', 'yaml'], title: '4 · Cortex Analyst reads the ontology model', body: 'The tool is backed by Cortex Analyst and <code>soccer_semantic_model_ontology.yml</code>, which describes the abstract views: <code>VW_ONT_PERSON</code>, <code>VW_ONT_ORGANIZATION</code>, <code>VW_ONT_EVENT</code>, <code>VW_ONT_WORKS_FOR</code>, <code>VW_ONT_PARTICIPATES_IN</code> and <code>REL_RESOLVED</code>. Matching words to that vocabulary:<pre>"working for"       → VW_ONT_WORKS_FOR\n"Real Madrid"       → organization / club NAME\n"on 1 January 2025" → EFFECTIVE_START ≤ d ≤ EFFECTIVE_END\n"who"               → VW_ONT_PERSON (+ names from V_PLAYER / V_COACH)</pre>' },
+    { on: ['analyst', 'sql'], title: '5 · …and writes SQL', body: '<pre>' + esc(SQL) + '</pre>Notice there is no <code>CASE WHEN type = …</code> and no list of relationship types. Polymorphism already happened, inside the views.' },
+    { on: ['wh', 'v_wf', 'v_p', 'v_c'], title: '6 · The SQL runs', body: 'Cortex Analyst returns SQL; the agent runs it on the warehouse configured for the tool. Snowflake sees five names: three in the <code>FROM</code>/<code>JOIN</code> spine and the two name lookups. None of them are tables.' },
+    { on: ['wh', 'v_wf', 'v_p', 'v_c', 'v_rr', 'v_pf', 'v_co', 'v_pl', 'v_ch', 'kg_e', 'kg_n'], tree: true, title: '7 · Views expand down to two tables', body: 'The compiler inlines every view. <code>VW_ONT_WORKS_FOR</code> becomes <code>REL_RESOLVED</code>, which becomes <code>V_PLAYS_FOR</code> ∪ <code>V_COACHES</code>, which becomes <code>KG_EDGE</code> filtered by <code>EDGE_TYPE</code>. Names come from <code>KG_NODE</code>. The club filter and date predicate end up applied to these nine Real Madrid edges:' + edgeTbl },
+    { on: ['wh', 'res'], title: '8 · Three rows', body: resultTbl + 'Two players and one coach. Modrić and Kroos had left six months earlier; Ancelotti\'s first spell ended in 2015, but his second covers the date.' },
+    { on: ['agent', 'orch'], title: '9 · The agent writes the answer', body: 'Rows go back to the agent. Its response instructions ask for "concise, data-driven answers" and to "use tables for multi-entity comparisons". It may also mention which tool and data it relied on.' },
+    { on: [], title: '10 · You get an answer', body: '<div class="answer">On 1 January 2025, <strong>three people</strong> were working for Real Madrid: two players and one coach.<div class="tbl-wrap" style="margin-top:8px"><table class="kg"><tr><th>Name</th><th>Role</th><th>Since</th></tr><tr><td>Kylian Mbappé</td><td class="c-player">Player</td><td>Jul 2024</td></tr><tr><td>Jude Bellingham</td><td class="c-player">Player</td><td>Jul 2023</td></tr><tr><td>Carlo Ancelotti</td><td class="c-coach">Coach</td><td>Jun 2021</td></tr></table></div><span style="color:var(--muted);font-size:12px">via query_soccer_ontology · VW_ONT_WORKS_FOR</span></div>' }
+  ];
+  const s = $('jr-s'), panel = $('jr-panel'), dots = $('jr-dots'), play = $('jr-play');
+  const dotEls = STEPS.map((_, i) => { const d = h('span', { title: 'Step ' + (i + 1) }, dots); d.addEventListener('click', () => go(i, true)); return d; });
+  let raf = 0, cur = 0, timer = 0, playing = false;
+  function setOn(st) {
+    for (const k in ids) {
+      const x = ids[k];
+      const on = st.on.includes(k);
+      x.r.style.stroke = on ? x.col : x.baseStroke;
+      x.r.style.strokeWidth = on ? 2.6 : 1.4;
+      if (x.t) x.t.style.fontWeight = on ? '700' : (x.t.style.fontSize === '12px' ? '500' : '400');
+      if (/^tool/.test(k)) x.r.style.fill = on ? 'color-mix(in srgb, var(--works) 24%, var(--bg))' : (st.dim && st.dim.includes(k) ? 'var(--faint)' : 'var(--bg)');
+      if (k === 'res') x.r.style.fill = on ? 'color-mix(in srgb, var(--hl) 30%, var(--bg))' : 'var(--bg)';
+    }
+    resT.forEach((t) => (t.style.opacity = cur >= 7 ? 1 : 0.15));
+    tl.forEach((l, i) => {
+      const on = !!st.tree;
+      l.p.style.transitionDelay = on ? (i * 0.06) + 's' : '0s';
+      l.p.style.stroke = on ? 'var(--player)' : 'var(--line)';
+      l.p.style.strokeWidth = on ? 2.2 : 1.3;
+    });
+  }
+  function animateTo(i) {
+    cancelAnimationFrame(raf);
+    if (i === 0) { trail.setAttribute('d', ''); dot.setAttribute('cx', ANCH[0][0]); dot.setAttribute('cy', ANCH[0][1]); return; }
+    trail.setAttribute('d', CURVE[i]);
+    const len = trail.getTotalLength();
+    trail.style.strokeDasharray = len; trail.style.strokeDashoffset = len;
+    let t0 = 0;
+    function step(ts) {
+      if (!t0) t0 = ts;
+      const f = clamp((ts - t0) / 900, 0, 1), e = f < 0.5 ? 2 * f * f : 1 - Math.pow(-2 * f + 2, 2) / 2;
+      const p = trail.getPointAtLength(e * len);
+      dot.setAttribute('cx', p.x); dot.setAttribute('cy', p.y);
+      trail.style.strokeDashoffset = len * (1 - e);
+      trail.style.opacity = 1 - 0.6 * f;
+      if (f < 1) raf = requestAnimationFrame(step);
+    }
+    raf = requestAnimationFrame(step);
+  }
+  function go(i, user) {
+    if (user && playing) stop();
+    const prev = cur; cur = clamp(i, 0, STEPS.length - 1); s.value = cur;
+    const st = STEPS[cur];
+    setOn(st);
+    panel.innerHTML = `<h4>${st.title}</h4>${st.body}`;
+    dotEls.forEach((d, j) => d.classList.toggle('on', j === cur));
+    if (cur === prev + 1) animateTo(cur);
+    else { cancelAnimationFrame(raf); trail.setAttribute('d', ''); const a = cur === 7 ? [754, 372] : ANCH[cur]; dot.setAttribute('cx', a[0]); dot.setAttribute('cy', a[1]); }
+  }
+  function stop() { playing = false; clearTimeout(timer); play.textContent = 'Play'; play.classList.remove('on'); }
+  function loop() { if (!playing) return; if (cur >= STEPS.length - 1) { stop(); return; } go(cur + 1); timer = setTimeout(loop, 3200); }
+  play.addEventListener('click', () => {
+    if (playing) { stop(); return; }
+    playing = true; play.textContent = 'Pause'; play.classList.add('on');
+    if (cur >= STEPS.length - 1) go(0);
+    timer = setTimeout(loop, 600);
+  });
+  s.addEventListener('input', () => go(+s.value, true));
+  $('jr-prev').addEventListener('click', () => go(cur - 1, true));
+  $('jr-next').addEventListener('click', () => go(cur + 1, true));
+  go(0);
+})();
+
+// ======================= FIG 9: results through time =======================
+(function () {
+  const svg = $('gantt');
+  const rows = E.filter((e) => e.dst === 'C1').slice().sort((a, b) => a.t0 - b.t0);
+  const X = (t) => 150 + ((t - 2009) / (2030 - 2009)) * 590;
+  const top = 18, RH = 28;
+  for (let y = 2009; y <= 2030; y += 3) {
+    const l = el('line', { x1: X(y), y1: top - 6, x2: X(y), y2: top + rows.length * RH }, svg); Object.assign(l.style, { stroke: 'var(--faint)', strokeWidth: '1' });
+    const t = el('text', { x: X(y), y: top + rows.length * RH + 16, 'text-anchor': 'middle', text: y }, svg); Object.assign(t.style, { fontSize: '11px', fill: 'var(--muted)' });
+  }
+  const bars = rows.map((e, i) => {
+    const y = top + i * RH;
+    const lab = el('text', { x: 140, y: y + 13, 'text-anchor': 'end', text: NM[e.src].name }, svg); Object.assign(lab.style, { fontSize: '12px' });
+    const b = el('rect', { x: X(e.t0), y: y + 1, width: Math.max(2, X(Math.min(e.t1, 2030)) - X(e.t0)), height: 16, rx: 8 }, svg);
+    Object.assign(b.style, { fill: e.type === 'COACHES' ? 'var(--coach)' : 'var(--player)', transition: 'opacity .15s' });
+    return { e, b, lab };
+  });
+  const cursor = el('g', null, svg);
+  const cl = el('line', { y1: top - 10, y2: top + rows.length * RH + 2 }, cursor); Object.assign(cl.style, { stroke: 'var(--ink)', strokeWidth: '1.6' });
+  const ch = el('circle', { cy: top - 10, r: 6 }, cursor); Object.assign(ch.style, { fill: 'var(--bg)', stroke: 'var(--ink)', strokeWidth: '2', cursor: 'ew-resize' });
+  const s = $('gantt-t'), out = $('gantt-date'), A = $('gantt-a'), B = $('gantt-b');
+  function draw() {
+    const t = +s.value;
+    cl.setAttribute('x1', X(t)); cl.setAttribute('x2', X(t)); ch.setAttribute('cx', X(t));
+    const live = bars.filter((x) => x.e.t0 <= t && t <= x.e.t1);
+    bars.forEach((x) => { const on = live.includes(x); x.b.style.opacity = on ? 1 : 0.28; x.lab.style.fontWeight = on ? '700' : '400'; });
+    out.textContent = pretty(t);
+    const li = (x) => `<li class="${x.e.type === 'COACHES' ? 'c-coach' : 'c-player'}">${esc(NM[x.e.src].name)}</li>`;
+    const a = live.filter((x) => x.e.type === 'PLAYS_FOR');
+    A.innerHTML = a.length ? a.map(li).join('') : '<li style="color:var(--muted)">(no rows)</li>';
+    B.innerHTML = live.length ? live.map(li).join('') : '<li style="color:var(--muted)">(no rows)</li>';
+  }
+  s.addEventListener('input', draw);
+  let drag = false;
+  function fromPointer(ev) {
+    const pt = svg.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY;
+    const p = pt.matrixTransform(svg.getScreenCTM().inverse());
+    s.value = clamp(2009 + ((p.x - 150) / 590) * 21, +s.min, +s.max); draw();
+  }
+  svg.addEventListener('pointerdown', (ev) => { drag = true; svg.setPointerCapture(ev.pointerId); fromPointer(ev); });
+  svg.addEventListener('pointermove', (ev) => { if (drag) fromPointer(ev); });
+  svg.addEventListener('pointerup', () => (drag = false));
+  svg.style.touchAction = 'pan-y';
+  draw();
+})();
+
+// ======================= FIG 10: shortest path =======================
+(function () {
+  const svg = $('g5');
+  const G = makeGraph(svg);
+  const adj = {};
+  E.forEach((e) => { (adj[e.src] = adj[e.src] || []).push([e.dst, e]); (adj[e.dst] = adj[e.dst] || []).push([e.src, e]); });
+  const ppl = window.__ONT.N.filter((n) => n.type !== 'MATCH');
+  const sa = $('bfs-a'), sb = $('bfs-b'), s = $('bfs-s'), panel = $('bfs-panel'), btn = $('bfs-play');
+  ppl.forEach((n) => { h('option', { value: n.k, text: n.short }, sa); h('option', { value: n.k, text: n.short }, sb); });
+  sa.value = 'P1'; sb.value = 'P2';
+  let R = null;
+  function bfs(a) {
+    const dist = { [a]: 0 }, par = {}, q = [a];
+    while (q.length) { const u = q.shift(); (adj[u] || []).forEach(([v, e]) => { if (!(v in dist)) { dist[v] = dist[u] + 1; par[v] = [u, e]; q.push(v); } }); }
+    return { dist, par, max: Math.max(...Object.values(dist)) };
+  }
+  function compute() { R = bfs(sa.value); s.max = R.max; draw(); }
+  function pathTo(b) { const out = []; let v = b; while (R.par[v]) { const [u, e] = R.par[v]; out.unshift([u, v, e]); v = u; } return out; }
+  function draw() {
+    const k = +s.value, b = sb.value, db = R.dist[b];
+    const found = db !== undefined && k >= db;
+    const path = found ? pathTo(b) : [];
+    const pe = new Set(path.map((x) => x[2].id)), pn = new Set(path.flatMap((x) => [x[0], x[1]]));
+    G.nodes.forEach((x) => {
+      const d = R.dist[x.n.k];
+      const seen = d !== undefined && d <= k;
+      x.g.style.opacity = found ? (pn.has(x.n.k) ? 1 : 0.2) : (seen ? 1 : 0.22);
+      x.halo.style.opacity = !found && d === k ? 1 : (found && pn.has(x.n.k) ? 1 : 0);
+      x.halo.style.stroke = found ? 'var(--hl)' : 'var(--ink)';
+    });
+    G.edges.forEach((x) => {
+      const tree = Object.values(R.par).some(([u, e]) => e === x.e) && Math.max(R.dist[x.e.src], R.dist[x.e.dst]) <= k;
+      x.p.style.opacity = found ? (pe.has(x.e.id) ? 1 : 0.08) : (tree ? 0.9 : 0.1);
+      x.p.style.strokeWidth = found && pe.has(x.e.id) ? 5 : 2.4;
+    });
+    const name = (kk) => esc(NM[kk].short);
+    if (found) {
+      let str = name(path.length ? path[0][0] : b);
+      path.forEach(([u, v, e]) => { const fwd = e.src === u; str += fwd ? ` —${e.type}→ ${name(v)}` : ` ←${e.type}— ${name(v)}`; });
+      panel.innerHTML = `<h4>Found at hop ${db}</h4><code style="white-space:normal">${str}</code><br><span style="color:var(--muted)">Several equally short paths may exist; breadth-first search returns the first it reaches.</span>`;
+    } else {
+      const fr = Object.keys(R.dist).filter((x) => R.dist[x] === k).map(name);
+      panel.innerHTML = `<h4>Hop ${k}</h4>Frontier: ${fr.join(', ') || '—'}`;
+    }
+  }
+  let timer = 0;
+  btn.addEventListener('click', () => {
+    clearInterval(timer); s.value = 0; draw();
+    const db = R.dist[sb.value];
+    timer = setInterval(() => { if (+s.value >= Math.min(+s.max, db)) { clearInterval(timer); return; } s.value = +s.value + 1; draw(); }, 750);
+  });
+  s.addEventListener('input', () => { clearInterval(timer); draw(); });
+  sa.addEventListener('change', () => { s.value = 0; compute(); });
+  sb.addEventListener('change', draw);
+  compute();
+  s.value = s.max; draw();
+})();
+})();
+</script>
+</body>
+</html>
